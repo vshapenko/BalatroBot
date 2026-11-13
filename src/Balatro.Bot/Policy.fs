@@ -212,7 +212,16 @@ let decide (seq: int) (g: Api.GameState) : Action * Decision =
     match g.State with
     | Api.State.SelectingHand -> chooseAction seq g
     | Api.State.BlindSelect ->
-        passive seq g SelectBlind "select blind" "skeleton policy only selects the blind in this phase"
+        let chosen =
+            g.Blinds
+            |> Option.bind (fun b ->
+                [ b.Small; b.Big; b.Boss ] |> List.tryFind (fun x -> x.Status = Api.BlindStatus.Select))
+            |> Option.map (fun b ->
+                let effect = if b.Effect = "" then "" else ": " + b.Effect
+                sprintf "select %s (target %d)%s" b.Name b.Score effect)
+            |> Option.defaultValue "select blind"
+
+        passive seq g SelectBlind chosen "skeleton policy only selects the blind in this phase"
     | Api.State.RoundEval -> passive seq g CashOut "cash out" "skeleton policy only cashes out in this phase"
     | Api.State.Shop -> shopAction seq g
     | Api.State.SmodsBoosterOpened -> passive seq g SkipPack "skip pack" "skeleton policy skips every pack"

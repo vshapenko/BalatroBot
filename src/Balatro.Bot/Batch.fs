@@ -21,10 +21,11 @@ let summary (stake: string) (rows: Row list) : string =
         let n = rows.Length
         let won = rows |> List.filter (fun r -> r.Outcome = "won") |> List.length
         let pct = Math.Round(100.0 * float won / float n, MidpointRounding.AwayFromZero) |> int
-        let mean = rows |> List.averageBy (fun r -> float r.Ante)
+        let played = rows |> List.filter (fun r -> not (r.Outcome.StartsWith "error"))
+        let mean = if played.IsEmpty then 0.0 else played |> List.averageBy (fun r -> float r.Ante)
 
         let antes =
-            rows
+            played
             |> List.countBy (fun r -> r.Ante)
             |> List.sortBy fst
             |> List.map (fun (a, c) -> sprintf "%dx%d" a c)
@@ -45,6 +46,11 @@ let summary (stake: string) (rows: Row list) : string =
             (rows |> List.sumBy (fun r -> r.Plays))
             (count "aborted")
             (count "error")
+
+let errorText (e: Api.ApiError) =
+    match e with
+    | Api.Transport m -> "error: " + Runner.oneLine m
+    | Api.Rpc r -> sprintf "error: %s: %s" r.Name (Runner.oneLine r.Message)
 
 let private csvLine (r: Row) =
     let outcome = "\"" + r.Outcome.Replace("\"", "\"\"") + "\""
@@ -74,7 +80,7 @@ let run (client: Api.Client) (deck: Api.Deck) (stake: Api.Stake) (seeds: string 
                   Mismatches = r.Mismatches }
             | Error e ->
                 { Seed = seed
-                  Outcome = sprintf "error: %A" e
+                  Outcome = errorText e
                   Ante = 0
                   Round = 0
                   Plays = 0

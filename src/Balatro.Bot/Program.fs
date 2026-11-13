@@ -3,7 +3,14 @@
 open System
 open Microsoft.FSharp.Reflection
 
-let private usage = "usage: run --deck <DECK> --stake <STAKE> --seed <SEED> [--url <URL>]"
+let private usage =
+    String.Join(
+        "\n",
+        [ "usage:"
+          "  run --deck <DECK> --stake <STAKE> --seed <SEED> [--url <URL>]"
+          "  batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--url <URL>]"
+          "  oracle [--keys k1,k2,...] [--url <URL>]" ]
+    )
 
 let private parseUnion<'a> (s: string) =
     FSharpType.GetUnionCases typeof<'a>

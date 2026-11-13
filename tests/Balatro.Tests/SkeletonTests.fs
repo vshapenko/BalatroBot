@@ -62,3 +62,23 @@ let ``decision renders as json and text`` () =
 let ``outcome text says exact or mismatch`` () =
     Assert.Contains("exact", Decision.outcomeToText { Seq = 1; Predicted = 336.0; Actual = 336.0 })
     Assert.Contains("MISMATCH", Decision.outcomeToText { Seq = 1; Predicted = 336.0; Actual = 300.0 })
+
+[<Fact>]
+let ``blind select names the blind to select`` () =
+    let small = load "BLIND_SELECT"
+    let action, decision = Policy.decide 1 small
+    Assert.Equal(Policy.SelectBlind, action)
+    Assert.Equal("select Small Blind (target 300)", decision.Chosen)
+    let b = small.Blinds.Value
+
+    let boss =
+        { small with
+            Blinds =
+                Some
+                    { Small = { b.Small with Status = Api.BlindStatus.Defeated }
+                      Big = { b.Big with Status = Api.BlindStatus.Defeated }
+                      Boss = { b.Boss with Status = Api.BlindStatus.Select } } }
+
+    let action, decision = Policy.decide 1 boss
+    Assert.Equal(Policy.SelectBlind, action)
+    Assert.Equal("select The Hook (target 600): Discards 2 random cards per hand played", decision.Chosen)

@@ -1,7 +1,9 @@
 module Balatro.Bot.Runner
 
+open System.Collections.Generic
 open System.IO
 open System.Text.Json
+open System.Text.Json.Nodes
 
 type Outcome =
     | Won
@@ -27,11 +29,66 @@ let maxDecisions = 3000
 let isWon (startWon: bool) (g: Api.GameState) =
     g.State <> Api.State.GameOver && g.AnteNum > winAnte && (startWon || g.Won)
 
+let oneLine (s: string) =
+    s.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ')
+
 let outcomeText outcome =
     match outcome with
     | Won -> "won"
     | Lost -> "lost"
     | Aborted reason -> "aborted: " + reason
+
+let context (seq: int) (g: Api.GameState) : string * string =
+    let blinds = g.Blinds.Value
+    let blind = [ blinds.Small; blinds.Big; blinds.Boss ] |> List.find (fun b -> b.Status = Api.BlindStatus.Current)
+    let edition (c: Api.Card) = c.Modifier.Edition |> Option.map (sprintf "%A")
+
+    let jokers = JsonArray()
+
+    for c in g.Jokers.Cards do
+        let j = JsonObject()
+        j.Add("label", JsonValue.Create c.Label)
+        j.Add("effect", JsonValue.Create c.Value.Effect)
+        j.Add("edition", edition c |> Option.map (fun e -> JsonValue.Create e :> JsonNode) |> Option.toObj)
+        j.Add("debuffed", JsonValue.Create c.State.Debuff)
+        jokers.Add j
+
+    let o = JsonObject()
+    o.Add("kind", JsonValue.Create "context")
+    o.Add("seq", JsonValue.Create seq)
+
+    o.Add(
+        "blind",
+        JsonObject(
+            [ KeyValuePair("name", JsonValue.Create blind.Name :> JsonNode)
+              KeyValuePair("effect", JsonValue.Create blind.Effect :> JsonNode)
+              KeyValuePair("score", JsonValue.Create blind.Score :> JsonNode) ]
+        )
+    )
+
+    o.Add("jokers", jokers)
+
+    let joker (c: Api.Card) =
+        [ Some c.Label
+          Some(oneLine c.Value.Effect)
+          edition c
+          (if c.State.Debuff then Some "debuffed" else None) ]
+        |> List.choose id
+        |> String.concat ", "
+        |> sprintf "[%s]"
+
+    let effect = if blind.Effect = "" then "" else ": " + blind.Effect
+
+    let text =
+        sprintf
+            "#%d context: blind %s (target %d)%s; jokers: %s"
+            seq
+            blind.Name
+            blind.Score
+            effect
+            (if g.Jokers.Cards.IsEmpty then "none" else g.Jokers.Cards |> List.map joker |> String.concat " ")
+
+    o.ToJsonString(), text
 
 let runOne
     (client: Api.Client)
@@ -50,7 +107,7 @@ let runOne
         printfn "%s" text
 
     let finish outcome (g: Api.GameState) plays discards exact purchases =
-        emit (JsonSerializer.Serialize {| outcome = outcomeText outcome |}) ("outcome: " + outcomeText outcome)
+        emit (JsonSerializer.Serialize {| kind = "result"; outcome = outcomeText outcome |}) ("outcome: " + outcomeText outcome)
 
         Ok
             { Outcome = outcome
@@ -90,6 +147,11 @@ let runOne
                               Actual = float (after.Round.Chips - g.Round.Chips) }
 
                         emit (Decision.outcomeToJson outcome) (Decision.outcomeToText outcome)
+
+                        if outcome.Predicted <> outcome.Actual then
+                            let json, text = context seq g
+                            emit json text
+
                         let hit = if outcome.Predicted = outcome.Actual then 1 else 0
                         loop startWon (seq + 1) after (plays + 1) discards (exact + hit) purchases)
                 | Policy.Discard cards ->
@@ -105,7 +167,7 @@ let runOne
                 | Policy.ReorderJokers order -> next (Api.rearrange client (Api.RearrangeJokers order))
                 | Policy.SkipPack -> next (Api.pack client Api.SkipPack)
             with ex ->
-                finish (Aborted(ex.GetType().Name + ": " + ex.Message)) g plays discards exact purchases
+                finish (Aborted(oneLine (ex.GetType().Name + ": " + ex.Message))) g plays discards exact purchases
 
     // A start sent while the game is in GAME_OVER fails, so go through the menu first
     Api.menu client
