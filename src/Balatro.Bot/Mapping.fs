@@ -79,11 +79,32 @@ let private handTypes =
       Pair
       HighCard ]
 
+let private activeBoss (state: Api.GameState) : string option =
+    let chicot = state.Jokers.Cards |> List.exists (fun c -> c.Key = "j_chicot" && not c.State.Debuff)
+
+    match state.Blinds with
+    | Some blinds when blinds.Boss.Status = Api.BlindStatus.Current && not chicot -> Some blinds.Boss.Name
+    | _ -> None
+
+let boss (state: Api.GameState) : Jokers.Boss option =
+    match activeBoss state with
+    | Some "The Psychic" -> Some Jokers.Psychic
+    | Some "The Eye" -> Some Jokers.Eye
+    | Some "The Mouth" -> Some Jokers.Mouth
+    | Some "The Flint" -> Some Jokers.Flint
+    | _ -> None
+
 let levels (state: Api.GameState) : Map<HandType, HandLevel> =
+    let arm = activeBoss state = Some "The Arm"
+
     handTypes
     |> List.map (fun t ->
         let info = state.Hands[HandType.label t]
-        t, { Chips = float info.Chips; Mult = float info.Mult })
+
+        if arm && info.Level > 1 then
+            t, handLevel t (info.Level - 1)
+        else
+            t, { Chips = float info.Chips; Mult = float info.Mult })
     |> Map.ofList
 
 let currentValue (text: string) : float option =
@@ -115,4 +136,5 @@ let situation (state: Api.GameState) : Jokers.Situation =
         |> List.map (fun t ->
             let info = state.Hands[HandType.label t]
             t, (info.Played, info.PlayedThisRound))
-        |> Map.ofList }
+        |> Map.ofList
+      Boss = boss state }

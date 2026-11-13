@@ -12,6 +12,12 @@ type Joker =
       SellValue: int
       Text: string }
 
+type Boss =
+    | Psychic
+    | Eye
+    | Mouth
+    | Flint
+
 type Situation =
     { Jokers: Joker list
       HandsLeft: int
@@ -19,7 +25,8 @@ type Situation =
       Money: int
       DeckCount: int
       JokerSlots: int
-      HandPlays: Map<HandType, int * int> }
+      HandPlays: Map<HandType, int * int>
+      Boss: Boss option }
 
 module Situation =
     let empty =
@@ -29,7 +36,8 @@ module Situation =
           Money = 0
           DeckCount = 0
           JokerSlots = 0
-          HandPlays = Map.empty }
+          HandPlays = Map.empty
+          Boss = None }
 
 type Context =
     { Played: Card list
