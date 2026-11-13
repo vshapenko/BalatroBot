@@ -1,5 +1,8 @@
 module Balatro.Bot.Mapping
 
+open System.Globalization
+open System.Text.RegularExpressions
+open Balatro.Core
 open Balatro.Core.Domain
 
 let private suit s =
@@ -82,3 +85,27 @@ let levels (state: Api.GameState) : Map<HandType, HandLevel> =
         let info = state.Hands[HandType.label t]
         t, { Chips = float info.Chips; Mult = float info.Mult })
     |> Map.ofList
+
+let currentValue (text: string) : float option =
+    let m = Regex.Match(text, @"\(Currently[^\d)]*(\d+(?:\.\d+)?)")
+
+    if m.Success then
+        Some(System.Double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture))
+    else
+        None
+
+let joker (card: Api.Card) : Jokers.Joker =
+    { Key = card.Key
+      Name = card.Label
+      Edition = card.Modifier.Edition |> Option.map edition
+      Debuffed = card.State.Debuff
+      Value = currentValue card.Value.Effect
+      SellValue = card.Cost.Sell }
+
+let situation (state: Api.GameState) : Jokers.Situation =
+    { Jokers = state.Jokers.Cards |> List.map joker
+      HandsLeft = max 0 (state.Round.HandsLeft - 1)
+      DiscardsLeft = state.Round.DiscardsLeft
+      Money = state.Money
+      DeckCount = state.Cards.Count
+      JokerSlots = state.Jokers.Limit }

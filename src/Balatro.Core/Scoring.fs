@@ -2,6 +2,7 @@ module Balatro.Core.Scoring
 
 open Balatro.Core.Domain
 open Balatro.Core.Hands
+open Balatro.Core.Jokers
 
 type ScoreInput =
     { Played: Card list
@@ -21,11 +22,8 @@ type ScoreBreakdown =
       Total: float
       Steps: ScoreStep list }
 
-type private Effect =
-    | AddChips of float
-    | AddMult of float
-    | TimesMult of float
-    | Retrigger
+// None marks a retrigger: it shows in the steps but changes nothing
+type private Entry = string * Effect option
 
 let private cardLabel (card: Card) =
     $"{Rank.label card.Rank} of {card.Suit}"
@@ -55,40 +53,171 @@ let private heldEffects (card: Card) =
     | Some Enhancement.Steel -> [ "Steel (held)", TimesMult 1.5 ]
     | _ -> []
 
-// A debuffed card yields nothing, and so does its seal
-let private withRetriggers (effectsOf: Card -> (string * Effect) list) (card: Card) =
-    let effects = if card.Debuffed then [] else effectsOf card
+let private gains (effects: (string * Effect) list) : Entry list =
+    effects |> List.map (fun (source, effect) -> source, Some effect)
 
-    match card.Seal with
-    | Some Seal.Red when not effects.IsEmpty -> effects @ [ "Red Seal retrigger", Retrigger ] @ effects
-    | _ -> effects
+// The slot whose logic runs at slot i: itself, or what a Blueprint or Brainstorm chain reaches
+let private resolve (jokers: Joker array) (slot: int) : int option =
+    let rec go depth i =
+        let copy target =
+            if target = i || target >= jokers.Length || depth + 1 > jokers.Length + 1 then
+                None
+            else
+                go (depth + 1) target
 
-let private applyEffect (chips, mult, steps) (source, effect) =
+        match jokers[i] with
+        | joker when joker.Debuffed -> None
+        | joker when joker.Key = "j_blueprint" -> copy (i + 1)
+        | joker when joker.Key = "j_brainstorm" -> copy 0
+        | _ -> Some i
+
+    go 0 slot
+
+let private applyEntry (chips, mult, steps) ((source, effect): Entry) =
     let chips, mult =
         match effect with
-        | AddChips amount -> chips + amount, mult
-        | AddMult amount -> chips, mult + amount
-        | TimesMult factor -> chips, mult * factor
-        | Retrigger -> chips, mult
+        | Some(AddChips amount) -> chips + amount, mult
+        | Some(AddMult amount) -> chips, mult + amount
+        | Some(TimesMult factor) -> chips, mult * factor
+        | None -> chips, mult
 
     chips, mult, { Source = source; Chips = chips; Mult = mult } :: steps
 
-let score (input: ScoreInput) : ScoreBreakdown =
-    let handType, scoringCards = classify input.Played
+let scoreWith (situation: Situation) (input: ScoreInput) : ScoreBreakdown =
+    let rules = JokerRegistry.rules situation.Jokers
+    let handType, classified = classifyWith rules input.Played
     let level = input.Levels[handType]
+    let jokers = Array.ofList situation.Jokers
 
-    let effects =
-        (scoringCards |> List.collect (withRetriggers playedEffects))
-        @ (input.Held |> List.collect (withRetriggers heldEffects))
+    let opening: Context =
+        { Played = input.Played
+          Scoring = (if rules.Splash then input.Played else classified)
+          Held = input.Held
+          HandType = handType
+          Contained = contained rules input.Played
+          Rules = rules
+          Situation = situation }
+
+    // Each joker's before step sees the cards its predecessors left; copies do not run it
+    let scoring, seenByJoker =
+        jokers
+        |> Array.indexed
+        |> Array.fold
+            (fun (cards, seen) (i, joker) ->
+                if joker.Debuffed then
+                    cards, seen
+                else
+                    let def = JokerRegistry.find joker.Key
+                    def.BeforeCards { opening with Scoring = cards } joker cards, Map.add i cards seen)
+            (opening.Scoring, Map.empty)
+
+    let context = { opening with Scoring = scoring }
+
+    let actors =
+        jokers
+        |> Array.indexed
+        |> Array.toList
+        |> List.choose (fun (i, slot) ->
+            resolve jokers i
+            |> Option.map (fun target -> slot.Name, jokers[target], JokerRegistry.find jokers[target].Key))
+
+    let withRetriggers (markers: string list) (pass: Entry list) : Entry list =
+        pass @ (markers |> List.collect (fun marker -> (marker, None) :: pass))
+
+    let playedEntries =
+        scoring
+        |> List.indexed
+        |> List.collect (fun (position, card) ->
+            if card.Debuffed then
+                []
+            else
+                let fromJokers =
+                    actors
+                    |> List.collect (fun (name, joker, def) ->
+                        def.OnScored context joker position card
+                        |> List.map (fun effect -> $"{name} ({cardLabel card})", Some effect))
+
+                let markers =
+                    [ if card.Seal = Some Seal.Red then
+                          yield "Red Seal retrigger"
+                      for name, joker, def in actors do
+                          for _ in 1 .. def.Retriggers context joker position card -> name ]
+
+                withRetriggers markers (gains (playedEffects card) @ fromJokers))
+
+    let heldEntries =
+        input.Held
+        |> List.collect (fun card ->
+            let own = if card.Debuffed then [] else heldEffects card
+
+            let fromJokers =
+                actors
+                |> List.collect (fun (name, joker, def) ->
+                    def.OnHeld context joker card
+                    |> List.map (fun effect -> $"{name} ({cardLabel card})", Some effect))
+
+            let pass = gains own @ fromJokers
+
+            // Retriggers apply only when the first pass produced an effect
+            if pass.IsEmpty then
+                []
+            else
+                let markers =
+                    [ if card.Seal = Some Seal.Red && not card.Debuffed then
+                          yield "Red Seal retrigger"
+                      for name, joker, def in actors do
+                          for _ in 1 .. def.HeldRetriggers context joker card -> name ]
+
+                withRetriggers markers pass)
+
+    let jokerEntries =
+        jokers
+        |> Array.indexed
+        |> Array.toList
+        |> List.collect (fun (i, slot) ->
+            let edition =
+                match slot.Edition with
+                | Some Foil when not slot.Debuffed -> [ AddChips 50.0 ]
+                | Some Holo when not slot.Debuffed -> [ AddMult 10.0 ]
+                | _ -> []
+
+            let own =
+                match resolve jokers i with
+                | Some target ->
+                    let def = JokerRegistry.find jokers[target].Key
+                    def.Main { context with Scoring = seenByJoker[target] } jokers[target]
+                | None -> []
+
+            // Baseball Card reacts to every Uncommon joker other than itself, debuffed or not
+            let offered =
+                [ if JokerRegistry.uncommon.Contains slot.Key then
+                      for v, offerer in Array.indexed jokers do
+                          match resolve jokers v with
+                          | Some target when jokers[target].Key = "j_baseball" && target <> i ->
+                              yield offerer.Name, Some(TimesMult 1.5)
+                          | _ -> () ]
+
+            let polychrome =
+                if slot.Edition = Some Polychrome && not slot.Debuffed then
+                    [ TimesMult 1.5 ]
+                else
+                    []
+
+            (edition @ own |> List.map (fun effect -> slot.Name, Some effect))
+            @ offered
+            @ (polychrome |> List.map (fun effect -> slot.Name, Some effect)))
 
     let start =
         level.Chips, level.Mult, [ { Source = HandType.label handType; Chips = level.Chips; Mult = level.Mult } ]
 
-    let chips, mult, steps = List.fold applyEffect start effects
+    let chips, mult, steps =
+        List.fold applyEntry start (playedEntries @ heldEntries @ jokerEntries)
 
     { HandType = handType
-      ScoringCards = scoringCards
+      ScoringCards = scoring
       Chips = chips
       Mult = mult
       Total = floor (chips * mult)
       Steps = List.rev steps }
+
+let score (input: ScoreInput) : ScoreBreakdown = scoreWith Situation.empty input

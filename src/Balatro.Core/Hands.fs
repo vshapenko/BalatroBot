@@ -2,12 +2,31 @@ module Balatro.Core.Hands
 
 open Balatro.Core.Domain
 
+type HandRules =
+    { FourFingers: bool
+      Shortcut: bool
+      Smeared: bool
+      Splash: bool
+      Pareidolia: bool }
+
+module HandRules =
+    let none =
+        { FourFingers = false
+          Shortcut = false
+          Smeared = false
+          Splash = false
+          Pareidolia = false }
+
 let private isStone (card: Card) = card.Enhancement = Some Enhancement.Stone
 
+let private isRed suit = suit = Hearts || suit = Diamonds
+
 // A Wild card matches every suit unless debuffed; a Stone card matches none.
-let private matchesSuit suit (card: Card) =
+let private matchesSuit rules suit (card: Card) =
     not (isStone card)
-    && ((card.Enhancement = Some Enhancement.Wild && not card.Debuffed) || card.Suit = suit)
+    && ((card.Enhancement = Some Enhancement.Wild && not card.Debuffed)
+        || (rules.Smeared && isRed card.Suit = isRed suit)
+        || card.Suit = suit)
 
 let private suitOrder suit =
     match suit with
@@ -18,13 +37,47 @@ let private suitOrder suit =
 
 let private highCardKey (_, card: Card) = Rank.id card.Rank, suitOrder card.Suit
 
-let private hasStraightRanks (ranks: Rank list) =
-    match ranks |> List.map Rank.id |> List.sort with
-    | [ 2; 3; 4; 5; 14 ] -> true
-    | [ a; b; c; d; e ] -> b = a + 1 && c = b + 1 && d = c + 1 && e = d + 1
-    | _ -> false
+let private flushCards rules (indexed: (int * Card) list) =
+    let need = if rules.FourFingers then 4 else 5
 
-let classify (cards: Card list) : HandType * Card list =
+    if indexed.Length > 5 || indexed.Length < need then
+        None
+    else
+        [ Spades; Hearts; Clubs; Diamonds ]
+        |> List.map (fun suit -> indexed |> List.filter (fun (_, card) -> matchesSuit rules suit card))
+        |> List.tryFind (fun matching -> matching.Length >= need)
+
+let private straightCards rules (indexed: (int * Card) list) =
+    let need = if rules.FourFingers then 4 else 5
+
+    if indexed.Length > 5 || indexed.Length < need then
+        None
+    else
+        let byRank =
+            indexed
+            |> List.filter (fun (_, card) -> not (isStone card))
+            |> List.groupBy (fun (_, card) -> Rank.id card.Rank)
+            |> Map.ofList
+
+        // Ace counts at both ends; with Shortcut a single missing rank may be skipped
+        let rec walk id length skipped found taken =
+            if id > 14 then
+                found, taken
+            else
+                match Map.tryFind (if id = 1 then 14 else id) byRank with
+                | Some cards ->
+                    let length = length + 1
+                    walk (id + 1) length false (found || length >= need) (taken @ cards)
+                | None when rules.Shortcut && not skipped && id <> 14 -> walk (id + 1) length true found taken
+                | None when found -> found, taken
+                | None -> walk (id + 1) 0 false false []
+
+        match walk 1 0 false false [] with
+        | true, taken -> Some(List.distinctBy fst taken)
+        | false, _ -> None
+
+// Every hand type the cards contain, best first, each with the cards that score for it
+let private evaluate rules (cards: Card list) =
     let indexed = List.indexed cards
     let ranked = indexed |> List.filter (fun (_, card) -> not (isStone card))
 
@@ -39,43 +92,47 @@ let classify (cards: Card list) : HandType * Card list =
     let four = groupsOf 4
     let three = groupsOf 3
     let two = groupsOf 2
+    let flush = flushCards rules indexed
+    let straight = straightCards rules indexed
 
-    let isFlush =
-        cards.Length = 5
-        && [ Spades; Hearts; Clubs; Diamonds ]
-           |> List.exists (fun suit -> cards |> List.forall (matchesSuit suit))
+    [ if not five.IsEmpty && flush.IsSome then
+          yield FlushFive, five.Head
+      if not three.IsEmpty && not two.IsEmpty && flush.IsSome then
+          yield FlushHouse, three.Head @ two.Head
+      if not five.IsEmpty then
+          yield FiveOfAKind, five.Head
+      match flush, straight with
+      | Some f, Some s -> yield StraightFlush, f @ (s |> List.filter (fun x -> not (List.contains x f)))
+      | _ -> ()
+      if not four.IsEmpty then
+          yield FourOfAKind, four.Head
+      if not three.IsEmpty && not two.IsEmpty then
+          yield FullHouse, three.Head @ two.Head
+      match flush with
+      | Some f -> yield Flush, f
+      | None -> ()
+      match straight with
+      | Some s -> yield Straight, s
+      | None -> ()
+      if not three.IsEmpty then
+          yield ThreeOfAKind, three.Head
+      if two.Length = 2 then
+          yield TwoPair, two.Head @ two.Tail.Head
+      elif three.Length = 1 && two.Length = 1 then
+          yield TwoPair, two.Head @ three.Head
+      if not two.IsEmpty then
+          yield Pair, two.Head
+      if not cards.IsEmpty then
+          // Stone cards always rank below every other card
+          yield HighCard, ranked |> List.sortByDescending highCardKey |> List.truncate 1 ]
 
-    let isStraight =
-        ranked.Length = 5 && hasStraightRanks (ranked |> List.map (fun (_, card) -> card.Rank))
-
+let classifyWith (rules: HandRules) (cards: Card list) : HandType * Card list =
     let handType, scoring =
-        if not five.IsEmpty && isFlush then
-            FlushFive, five.Head
-        elif not three.IsEmpty && not two.IsEmpty && isFlush then
-            FlushHouse, three.Head @ two.Head
-        elif not five.IsEmpty then
-            FiveOfAKind, five.Head
-        elif isFlush && isStraight then
-            StraightFlush, indexed
-        elif not four.IsEmpty then
-            FourOfAKind, four.Head
-        elif not three.IsEmpty && not two.IsEmpty then
-            FullHouse, three.Head @ two.Head
-        elif isFlush then
-            Flush, indexed
-        elif isStraight then
-            Straight, indexed
-        elif not three.IsEmpty then
-            ThreeOfAKind, three.Head
-        elif two.Length = 2 then
-            TwoPair, two.Head @ two.Tail.Head
-        elif not two.IsEmpty then
-            Pair, two.Head
-        else
-            // Stone cards always rank below every other card
-            HighCard, ranked |> List.sortByDescending highCardKey |> List.truncate 1
+        match evaluate rules cards with
+        | best :: _ -> best
+        | [] -> HighCard, []
 
-    let stones = indexed |> List.filter (fun (_, card) -> isStone card)
+    let stones = List.indexed cards |> List.filter (fun (_, card) -> isStone card)
 
     let scoringCards =
         scoring @ stones
@@ -84,3 +141,16 @@ let classify (cards: Card list) : HandType * Card list =
         |> List.map snd
 
     handType, scoringCards
+
+let classify (cards: Card list) : HandType * Card list = classifyWith HandRules.none cards
+
+let contained (rules: HandRules) (cards: Card list) : Set<HandType> =
+    let lower upper below types =
+        if Set.contains upper types then Set.add below types else types
+
+    evaluate rules cards
+    |> List.map fst
+    |> Set.ofList
+    |> lower FiveOfAKind FourOfAKind
+    |> lower FourOfAKind ThreeOfAKind
+    |> lower ThreeOfAKind Pair
