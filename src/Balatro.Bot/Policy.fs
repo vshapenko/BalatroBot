@@ -49,6 +49,8 @@ let private chooseAction seq (g: Api.GameState) =
         [ g.Blinds.Value.Small; g.Blinds.Value.Big; g.Blinds.Value.Boss ]
         |> List.find (fun b -> b.Status = Api.BlindStatus.Current)
 
+    let situation = Mapping.situation g
+
     let input: Search.Input =
         { Hand = hand
           Deck = g.Cards.Cards |> List.choose Mapping.toCard
@@ -57,10 +59,11 @@ let private chooseAction seq (g: Api.GameState) =
           DiscardsLeft = g.Round.DiscardsLeft
           Needed = float (blind.Score - g.Round.Chips)
           Score =
-            fun handsLeftAfter played held ->
+            fun handsLeftAfter discardsLeft played held ->
                 Scoring.scoreWith
-                    { Mapping.situation g with
-                        HandsLeft = handsLeftAfter }
+                    { situation with
+                        HandsLeft = handsLeftAfter
+                        DiscardsLeft = discardsLeft }
                     { Played = played
                       Held = held
                       Levels = levels }

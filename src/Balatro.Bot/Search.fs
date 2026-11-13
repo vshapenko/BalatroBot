@@ -11,7 +11,7 @@ type Input =
       HandSize: int
       DiscardsLeft: int
       Needed: float
-      Score: int -> Card list -> Card list -> ScoreBreakdown
+      Score: int -> int -> Card list -> Card list -> ScoreBreakdown
       Seed: int
       RedrawSamples: int
       Rollouts: int }
@@ -34,28 +34,29 @@ let rec private combos k xs =
 let private subsets hand = [ 1..5 ] |> List.collect (fun k -> combos k hand)
 
 let private scored
-    (score: int -> Card list -> Card list -> ScoreBreakdown)
+    (score: int -> int -> Card list -> Card list -> ScoreBreakdown)
     (handsLeftAfter: int)
+    (discardsLeft: int)
     (hand: (int * Card) list)
     =
     subsets hand
     |> List.map (fun subset ->
         let played = subset |> List.map snd
         let held = hand |> List.filter (fun h -> not (List.contains h subset)) |> List.map snd
-        subset |> List.map fst, played, score handsLeftAfter played held)
+        subset |> List.map fst, played, score handsLeftAfter discardsLeft played held)
 
-let private shuffles (input: Input) (count: int) =
+let private shuffles (input: Input) (offset: int) (count: int) =
     Array.init count (fun s ->
         let cards = Array.ofList input.Deck
-        Random(input.Seed + s).Shuffle cards
+        Random(input.Seed + offset + s).Shuffle cards
         cards)
 
 let plays (input: Input) : (int list * Card list * ScoreBreakdown) list =
-    scored input.Score (input.HandsLeft - 1) input.Hand
+    scored input.Score (input.HandsLeft - 1) input.DiscardsLeft input.Hand
     |> List.sortBy (fun (indices, _, b) -> -b.Total, indices.Length, indices)
 
 let discards (input: Input) : (int list * float) list =
-    let shuffles = shuffles input input.RedrawSamples
+    let shuffles = shuffles input 0 input.RedrawSamples
 
     let expected (subset: (int * Card) list) =
         let kept = input.Hand |> List.filter (fun h -> not (List.contains h subset)) |> List.map snd
@@ -64,7 +65,7 @@ let discards (input: Input) : (int list * float) list =
             shuffles
             |> Array.map (fun shuffle ->
                 let hand = kept @ (shuffle |> Array.truncate subset.Length |> List.ofArray) |> List.indexed
-                scored input.Score (input.HandsLeft - 1) hand |> List.map (fun (_, _, b) -> b.Total) |> List.max)
+                scored input.Score (input.HandsLeft - 1) (input.DiscardsLeft - 1) hand |> List.map (fun (_, _, b) -> b.Total) |> List.max)
 
         subset |> List.map fst, Array.average totals
 
@@ -104,14 +105,14 @@ let private rollout (input: Input) (shuffle: Card[]) (candidate: Candidate) : fl
         let count = min (input.HandSize - kept.Length) (shuffle.Length - taken)
         kept @ List.ofArray shuffle[taken .. taken + count - 1], taken + count
 
-    let rec play (hand: Card list) chips used taken =
+    let rec play (hand: Card list) chips used taken discardsLeft =
         if used >= input.HandsLeft || chips >= input.Needed || hand.IsEmpty then
             chips, used
         else
             let indexed = List.indexed hand
 
             let indices, _, best =
-                scored input.Score (input.HandsLeft - used - 1) indexed
+                scored input.Score (input.HandsLeft - used - 1) discardsLeft indexed
                 |> List.minBy (fun (indices, _, b) -> -b.Total, -indices.Length, indices)
 
             let kept =
@@ -120,15 +121,15 @@ let private rollout (input: Input) (shuffle: Card[]) (candidate: Candidate) : fl
                 |> List.map snd
 
             let next, taken = refill kept taken
-            play next (chips + best.Total) (used + 1) taken
+            play next (chips + best.Total) (used + 1) taken discardsLeft
 
-    let first, chips, used =
+    let first, chips, used, discardsLeft =
         match candidate with
-        | PlayCards(indices, _, b) -> indices, b.Total, 1
-        | DiscardCards(indices, _) -> indices, 0.0, 0
+        | PlayCards(indices, _, b) -> indices, b.Total, 1, input.DiscardsLeft
+        | DiscardCards(indices, _) -> indices, 0.0, 0, input.DiscardsLeft - 1
 
     let hand, taken = refill (without first) 0
-    play hand chips used taken
+    play hand chips used taken discardsLeft
 
 let private outlook (input: Input) (shuffles: Card[][]) (candidate: Candidate) : Outlook =
     let results = shuffles |> Array.map (fun shuffle -> rollout input shuffle candidate)
@@ -139,7 +140,7 @@ let private outlook (input: Input) (shuffles: Card[][]) (candidate: Candidate) :
       MeanChips = results |> Array.averageBy fst }
 
 let evaluate (input: Input) : (Candidate * Outlook) list =
-    let rollouts = shuffles input input.Rollouts
+    let rollouts = shuffles input input.RedrawSamples input.Rollouts
 
     let discardCandidates =
         if input.DiscardsLeft > 0 then

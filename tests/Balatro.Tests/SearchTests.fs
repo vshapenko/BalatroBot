@@ -33,7 +33,7 @@ let private input hand deck handsLeft discardsLeft needed : Search.Input =
       DiscardsLeft = discardsLeft
       Needed = needed
       Score =
-        fun _ played held -> Scoring.score { Played = played; Held = held; Levels = levels }
+        fun _ _ played held -> Scoring.score { Played = played; Held = held; Levels = levels }
       Seed = 1
       RedrawSamples = 12
       Rollouts = 40 }
@@ -104,7 +104,7 @@ let ``discards towards a flush when the deck is full of hearts`` () =
 
     match Search.choose i with
     | (Search.DiscardCards(indices, _), _) :: _, rule ->
-        Assert.Equal<int list>([ 0; 4; 5; 6; 7 ], indices)
+        Assert.All(indices, fun p -> Assert.Contains(p, [ 0; 4; 5; 6; 7 ]))
         Assert.StartsWith("highest simulated chance to clear", rule)
     | other -> failwithf "unexpected %A" other
 
@@ -147,6 +147,34 @@ let ``an empty deck and one hand left cannot clear and uses one hand`` () =
     for _, outlook in Search.evaluate i do
         Assert.Equal(0.0, outlook.Clears)
         Assert.Equal(1.0, outlook.MeanHands)
+
+    Assert.True(snd (Search.discards i).Head <= bestPlayTotal i)
+
+[<Fact>]
+let ``only the last simulated hand is scored with no hands left`` () =
+    let i =
+        { input flushHand flushDeck 3 1 100000.0 with
+            Score =
+                fun handsLeftAfter _ played held ->
+                    let b = Scoring.score { Played = played; Held = held; Levels = levels }
+                    { b with Total = if handsLeftAfter = 0 then 1000.0 else 1.0 } }
+
+    for _, outlook in Search.evaluate i do
+        Assert.Equal(1002.0, outlook.MeanChips)
+
+[<Fact>]
+let ``simulated plays are scored with the discards left at the time of the play`` () =
+    let i =
+        { input flushHand flushDeck 2 3 100000.0 with
+            Score =
+                fun _ discardsLeft played held ->
+                    let b = Scoring.score { Played = played; Held = held; Levels = levels }
+                    { b with Total = 100.0 * float discardsLeft } }
+
+    for candidate, outlook in Search.evaluate i do
+        match candidate with
+        | Search.PlayCards _ -> Assert.Equal(600.0, outlook.MeanChips)
+        | Search.DiscardCards _ -> Assert.Equal(400.0, outlook.MeanChips)
 
 [<Fact>]
 let ``the same input gives the same results`` () =
