@@ -143,7 +143,7 @@ let private shopBuild (g: Api.GameState) : Shop.Build =
 
 let private lastAnte (g: Api.GameState) = g.AnteNum >= 8
 
-let private interestFloor (g: Api.GameState) = if lastAnte g then 0 else 25
+let private interestFloor relaxed = if relaxed then 0 else 25
 
 let private stickers (card: Api.Card) =
     [ if card.Modifier.Rental then "Rental", 3
@@ -195,10 +195,10 @@ let private liftVerdantLeaf seq (g: Api.GameState) : (Action * Decision) option 
     else
         None
 
-let private cheapestPack (g: Api.GameState) (prefix: string) =
+let private cheapestPack (g: Api.GameState) (floor: int) (prefix: string) =
     g.Packs.Cards
     |> List.indexed
-    |> List.filter (fun (_, c) -> c.Key.StartsWith prefix && g.Money - c.Cost.Buy >= interestFloor g)
+    |> List.filter (fun (_, c) -> c.Key.StartsWith prefix && g.Money - c.Cost.Buy >= floor)
     |> List.sortBy (fun (i, c) -> c.Cost.Buy, i)
     |> List.tryHead
 
@@ -216,6 +216,18 @@ let private shopAction seq (g: Api.GameState) =
     | None ->
         let build = shopBuild g
 
+        let owned = build.Jokers.Length
+        let early = owned < 3
+
+        let behindScore =
+            g.Blinds
+            |> Option.filter (fun _ -> not early)
+            |> Option.map (fun b -> Shop.roundScore (shopSeed g) 20 (Shop.revalue build), float b.Boss.Score)
+            |> Option.filter (fun (score, target) -> score < 1.5 * target)
+
+        let behind = behindScore.IsSome
+        let relaxed = lastAnte g || behind
+
         let offers =
             g.Shop.Cards
             |> List.indexed
@@ -227,10 +239,17 @@ let private shopAction seq (g: Api.GameState) =
                 | _ -> None)
 
         let seed = shopSeed g
-        let owned = build.Jokers.Length
-        let early = owned < 3
 
-        let lastNote = if lastAnte g then "; interest no longer matters in the last ante" else ""
+        let relaxedText =
+            match behindScore with
+            | Some(score, target) when not (lastAnte g) ->
+                sprintf
+                    "the build is behind: simulated round score %.0f is under 1.5x the boss target %.0f; interest no longer matters"
+                    score
+                    target
+            | _ -> "interest no longer matters in the last ante"
+
+        let lastNote = if relaxed then "; " + relaxedText else ""
         let earlyNote = if early && not (lastAnte g) then "; fewer than 3 jokers owned: interest not counted" else ""
 
         let offered (offer: Shop.Offer) = g.Shop.Cards[Shop.position offer]
@@ -239,7 +258,7 @@ let private shopAction seq (g: Api.GameState) =
             Shop.evaluate seed 20 g.Money build offers
             |> List.map (fun e ->
                 { e with
-                    InterestLost = (if lastAnte g || early then 0 else e.InterestLost) + stickerLoss (offered e.Offer) })
+                    InterestLost = (if relaxed || early then 0 else e.InterestLost) + stickerLoss (offered e.Offer) })
 
         let percent (e: Shop.Evaluated) = (e.After / e.Before - 1.0) * 100.0
         let needed (e: Shop.Evaluated) = (Shop.threshold owned e - 1.0) * 100.0
@@ -282,7 +301,7 @@ let private shopAction seq (g: Api.GameState) =
                 |> List.map (fun u ->
                     { u with
                         Threshold =
-                            (if lastAnte g then 1.05 else u.Threshold)
+                            (if relaxed then 1.05 else u.Threshold)
                             + 0.05 * float (stickerLoss (offered u.Offer)) })
 
             match Shop.chooseUpgrade upgrades with
@@ -335,14 +354,16 @@ let private shopAction seq (g: Api.GameState) =
                         None
                 else
                     let slotFree = build.Jokers.Length < build.Situation.JokerSlots
-                    let celestial = cheapestPack g "p_celestial"
-                    let floorText =
-                        if lastAnte g then
-                            "interest no longer matters in the last ante"
-                        else
-                            sprintf "stays at or above the $%d interest cap" (interestFloor g)
+                    let floor = interestFloor relaxed
+                    let celestial = cheapestPack g floor "p_celestial"
 
-                    match (if slotFree then cheapestPack g "p_buffoon" |> Option.orElse celestial else celestial) with
+                    let floorText =
+                        if relaxed then
+                            relaxedText
+                        else
+                            sprintf "stays at or above the $%d interest cap" floor
+
+                    match (if slotFree then cheapestPack g floor "p_buffoon" |> Option.orElse celestial else celestial) with
                     | Some(index, pack) ->
                         let kind =
                             if not slotFree then "the joker slots are full"
@@ -362,7 +383,7 @@ let private shopAction seq (g: Api.GameState) =
                                 floorText)
                             []
                             None
-                    | None when g.Money - g.Round.RerollCost >= interestFloor g && g.Round.RerollCost <= 7 ->
+                    | None when g.Money - g.Round.RerollCost >= floor && g.Round.RerollCost <= 7 ->
                         Reroll,
                         decision
                             seq

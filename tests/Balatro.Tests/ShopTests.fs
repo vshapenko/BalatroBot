@@ -480,6 +480,26 @@ let ``interest no longer matters in the last ante`` () =
     Assert.Contains("last ante", decision.Rule)
 
 [<Fact>]
+let ``interest no longer matters when the build is behind the boss`` () =
+    let g = load "SHOP"
+    let plain = { g.Shop.Cards[1] with Set = Api.CardSet.Joker; Key = "j_joker"; Label = "Joker" }
+    let owned = { g.Jokers with Count = 3; Cards = [ for i in 1..3 -> { plain with Id = 100 + i } ] }
+
+    let againstBoss score =
+        let blinds = g.Blinds.Value
+        let boss = { blinds with Boss = { blinds.Boss with Score = score } }
+        tarotShop { g with AnteNum = 3; Jokers = owned; Blinds = Some boss } 10
+
+    let action, decision = Policy.decide 1 (againstBoss 10_000_000)
+    Assert.Equal(Policy.BuyPack 0, action)
+    Assert.Contains("the build is behind", decision.Rule)
+    Assert.DoesNotContain("last ante", decision.Rule)
+
+    let action, decision = Policy.decide 1 (againstBoss 1)
+    Assert.NotEqual(Policy.BuyPack 0, action)
+    Assert.DoesNotContain("behind", decision.Rule)
+
+[<Fact>]
 let ``the runner waits while every hand card is still debuffed`` () =
     let all = verdantLeaf true []
     Assert.True(Runner.allHandDebuffed all)
