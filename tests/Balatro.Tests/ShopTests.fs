@@ -392,3 +392,104 @@ let ``policy skips a pack whose first card is a spectral card`` () =
     let action, decision = Policy.decide 1 { g with Pack = { g.Pack with Cards = spectral :: g.Pack.Cards.Tail } }
     Assert.Equal(Policy.SkipPack, action)
     Assert.Contains("cannot handle safely", decision.Rule)
+
+let private jokerCard key label =
+    let shop = load "SHOP"
+    { shop.Shop.Cards[1] with Set = Api.CardSet.Joker; Key = key; Label = label }
+
+let private eternal (card: Api.Card) =
+    { card with Modifier = { card.Modifier with Eternal = true } }
+
+let private verdantLeaf debuffed (jokers: Api.Card list) =
+    let g = load "SELECTING_HAND"
+    let blinds = g.Blinds.Value
+
+    { g with
+        Blinds =
+            Some
+                { blinds with
+                    Small = { blinds.Small with Status = Api.BlindStatus.Defeated }
+                    Boss = { blinds.Boss with Name = "Verdant Leaf"; Status = Api.BlindStatus.Current } }
+        Hand =
+            { g.Hand with
+                Cards = g.Hand.Cards |> List.map (fun c -> { c with State = { c.State with Debuff = debuffed } }) }
+        Jokers = { g.Jokers with Count = jokers.Length; Cards = jokers } }
+
+[<Fact>]
+let ``policy sells the joker that costs least to lift Verdant Leaf`` () =
+    let plain = jokerCard "j_joker" "Joker"
+    let idle = jokerCard "j_credit_card" "Credit Card"
+
+    let action, decision = Policy.decide 1 (verdantLeaf true [ plain; idle ])
+    Assert.Equal(Policy.SellJoker 1, action)
+    Assert.Equal("sell Credit Card to lift Verdant Leaf", decision.Chosen)
+    Assert.Contains("all cards until a joker is sold", decision.Rule)
+    Assert.Matches(@"round score at \d+", decision.Rule)
+
+    Assert.Equal(Policy.SellJoker 0, fst (Policy.decide 1 (verdantLeaf true [ plain; eternal idle ])))
+
+[<Fact>]
+let ``policy plays on under Verdant Leaf when no joker may be sold or the cards are not debuffed`` () =
+    let plain = jokerCard "j_joker" "Joker"
+    let idle = jokerCard "j_credit_card" "Credit Card"
+
+    let isSale action =
+        match action with
+        | Policy.SellJoker _ -> true
+        | _ -> false
+
+    Assert.False(isSale (fst (Policy.decide 1 (verdantLeaf true [ eternal plain; eternal idle ]))))
+    Assert.False(isSale (fst (Policy.decide 1 (verdantLeaf false [ plain; idle ]))))
+
+[<Fact>]
+let ``a sticker adds its dollars per round to the buy threshold`` () =
+    let plain = jokerCard "j_joker" "Joker"
+    let rental = { plain with Modifier = { plain.Modifier with Rental = true } }
+    let perishable = { plain with Modifier = { plain.Modifier with Perishable = Some 5 } }
+
+    let bought card gain =
+        (choose [ { entry gain 0 with InterestLost = Policy.stickerLoss card } ]).IsSome
+
+    Assert.False(bought rental 1.15)
+    Assert.True(bought rental 1.25)
+    Assert.False(bought perishable 1.12)
+    Assert.True(bought perishable 1.20)
+    Assert.True(bought plain 1.06)
+
+[<Fact>]
+let ``policy names the sticker of the joker it buys`` () =
+    let g = load "SHOP"
+    let duo = jokerCard "j_duo" "Duo"
+    let rental = { duo with Cost = { duo.Cost with Buy = 1 }; Modifier = { duo.Modifier with Rental = true } }
+    let action, decision = Policy.decide 1 { g with Money = 10; Shop = { g.Shop with Cards = [ rental ] } }
+    Assert.Equal(Policy.BuyCard 0, action)
+    Assert.Contains("Rental sticker adds 15%", decision.Rule)
+
+[<Fact>]
+let ``interest no longer matters in the last ante`` () =
+    let g = load "SHOP"
+    let atAnte ante money = tarotShop { g with AnteNum = ante } money
+
+    let action, decision = Policy.decide 1 (atAnte 8 10)
+    Assert.Equal(Policy.BuyPack 0, action)
+    Assert.Contains("last ante", decision.Rule)
+    Assert.NotEqual(Policy.BuyPack 0, fst (Policy.decide 1 (atAnte 7 10)))
+
+    let action, decision = Policy.decide 1 (withoutPacks (atAnte 8 6))
+    Assert.Equal(Policy.Reroll, action)
+    Assert.Contains("last ante", decision.Rule)
+
+[<Fact>]
+let ``the runner waits while every hand card is still debuffed`` () =
+    let all = verdantLeaf true []
+    Assert.True(Runner.allHandDebuffed all)
+
+    let one =
+        { all with
+            Hand =
+                { all.Hand with
+                    Cards =
+                        { all.Hand.Cards.Head with State = { all.Hand.Cards.Head.State with Debuff = false } }
+                        :: all.Hand.Cards.Tail } }
+
+    Assert.False(Runner.allHandDebuffed one)

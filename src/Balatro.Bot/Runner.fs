@@ -32,6 +32,20 @@ let maxDecisions = 3000
 let isWon (startWon: bool) (g: Api.GameState) =
     g.State <> Api.State.GameOver && g.AnteNum > winAnte && (startWon || g.Won)
 
+let allHandDebuffed (g: Api.GameState) =
+    not g.Hand.Cards.IsEmpty && g.Hand.Cards |> List.forall (fun c -> c.State.Debuff)
+
+// the reply to a sale still shows the hand debuffed for about 0.1 s while Verdant Leaf is being lifted
+let private settle client (after: Api.GameState) =
+    let rec reread tries (g: Api.GameState) =
+        if tries = 0 || g.State <> Api.State.SelectingHand || not (allHandDebuffed g) then
+            Ok g
+        else
+            System.Threading.Thread.Sleep 100
+            Api.gamestate client |> Result.bind (reread (tries - 1))
+
+    reread 20 after
+
 let oneLine (s: string) =
     s.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ')
 
@@ -172,6 +186,7 @@ let runOne
                         loop startWon (seq + 1) after plays discards exact (purchases + 1) sales rerolls packs)
                 | Policy.SellJoker index ->
                     Api.sell client (Api.SellJoker index)
+                    |> Result.bind (fun after -> if g.State = Api.State.SelectingHand then settle client after else Ok after)
                     |> Result.bind (fun after ->
                         loop startWon (seq + 1) after plays discards exact purchases (sales + 1) rerolls packs)
                 | Policy.Reroll ->

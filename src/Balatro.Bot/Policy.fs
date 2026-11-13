@@ -44,6 +44,10 @@ let private decision seq (g: Api.GameState) chosen rule candidates predicted : D
 let private passive seq (g: Api.GameState) action chosen rule =
     action, decision seq g chosen rule [] None
 
+let private currentBlind (g: Api.GameState) =
+    [ g.Blinds.Value.Small; g.Blinds.Value.Big; g.Blinds.Value.Boss ]
+    |> List.find (fun b -> b.Status = Api.BlindStatus.Current)
+
 let private chooseAction seq (g: Api.GameState) =
     let levels = Mapping.levels g
 
@@ -52,9 +56,7 @@ let private chooseAction seq (g: Api.GameState) =
         |> List.indexed
         |> List.choose (fun (i, c) -> Mapping.toCard c |> Option.map (fun card -> i, card))
 
-    let blind =
-        [ g.Blinds.Value.Small; g.Blinds.Value.Big; g.Blinds.Value.Boss ]
-        |> List.find (fun b -> b.Status = Api.BlindStatus.Current)
+    let blind = currentBlind g
 
     let situation = Mapping.situation g
 
@@ -139,14 +141,72 @@ let private shopBuild (g: Api.GameState) : Shop.Build =
       Hands = g.Round.HandsLeft
       Situation = situation }
 
-let private interestFloor = 25
+let private lastAnte (g: Api.GameState) = g.AnteNum >= 8
+
+let private interestFloor (g: Api.GameState) = if lastAnte g then 0 else 25
+
+let private stickers (card: Api.Card) =
+    [ if card.Modifier.Rental then "Rental", 3
+      if card.Modifier.Perishable.IsSome then "Perishable", 2 ]
+
+let stickerLoss (card: Api.Card) = stickers card |> List.sumBy snd
+
+let private stickerText (card: Api.Card) =
+    stickers card
+    |> List.map (fun (name, loss) -> sprintf "%s sticker adds %d%%" name (5 * loss))
+    |> String.concat ", "
+
+let private liftVerdantLeaf seq (g: Api.GameState) : (Action * Decision) option =
+    let sellable =
+        g.Jokers.Cards |> List.indexed |> List.filter (fun (_, c) -> not c.Modifier.Eternal)
+
+    let debuffed = not g.Hand.Cards.IsEmpty && g.Hand.Cards |> List.forall (fun c -> c.State.Debuff)
+
+    if (currentBlind g).Name = "Verdant Leaf" && debuffed && not sellable.IsEmpty then
+        let build = shopBuild g
+        let clear = { build with Deck = build.Deck |> List.map (fun c -> { c with Debuffed = false }) }
+
+        let scored =
+            sellable
+            |> List.map (fun (i, c) ->
+                i, c.Label, Shop.roundScore (shopSeed g) 8 { clear with Jokers = List.removeAt i clear.Jokers })
+            |> List.sortBy (fun (i, _, score) -> -score, i)
+
+        let candidate (_, name, score) : Candidate =
+            { Action = sprintf "sell %s" name
+              Value = score
+              Detail = sprintf "round score %.0f without %s" score name }
+
+        let index, name, score = scored.Head
+
+        Some(
+            SellJoker index,
+            decision
+                seq
+                g
+                (sprintf "sell %s to lift Verdant Leaf" name)
+                (sprintf
+                    "Verdant Leaf debuffs all cards until a joker is sold; selling %s keeps the simulated round score at %.0f"
+                    name
+                    score)
+                (scored |> List.truncate 5 |> List.map candidate)
+                None
+        )
+    else
+        None
 
 let private cheapestPack (g: Api.GameState) (prefix: string) =
     g.Packs.Cards
     |> List.indexed
-    |> List.filter (fun (_, c) -> c.Key.StartsWith prefix && g.Money - c.Cost.Buy >= interestFloor)
+    |> List.filter (fun (_, c) -> c.Key.StartsWith prefix && g.Money - c.Cost.Buy >= interestFloor g)
     |> List.sortBy (fun (i, c) -> c.Cost.Buy, i)
     |> List.tryHead
+
+let private thresholdText (card: Api.Card) (percent: float) =
+    if (stickers card).IsEmpty then
+        sprintf "threshold +%.0f%%" percent
+    else
+        sprintf "threshold +%.0f%% (%s)" percent (stickerText card)
 
 let private shopAction seq (g: Api.GameState) =
     match g.Consumables.Cards |> List.tryFindIndex (fun c -> c.Set = Api.CardSet.Planet) with
@@ -167,7 +227,15 @@ let private shopAction seq (g: Api.GameState) =
                 | _ -> None)
 
         let seed = shopSeed g
-        let evaluated = Shop.evaluate seed 20 g.Money build offers
+        let lastNote = if lastAnte g then "; interest no longer matters in the last ante" else ""
+        let offered (offer: Shop.Offer) = g.Shop.Cards[Shop.position offer]
+
+        let evaluated =
+            Shop.evaluate seed 20 g.Money build offers
+            |> List.map (fun e ->
+                { e with
+                    InterestLost = (if lastAnte g then 0 else e.InterestLost) + stickerLoss (offered e.Offer) })
+
         let percent (e: Shop.Evaluated) = (e.After / e.Before - 1.0) * 100.0
 
         let candidate (e: Shop.Evaluated) : Candidate =
@@ -184,7 +252,7 @@ let private shopAction seq (g: Api.GameState) =
                     e.Before
                     e.After
                     (percent e)
-                    e.InterestLost }
+                    (e.InterestLost - stickerLoss (offered e.Offer)) }
 
         match Shop.choose evaluated with
         | Some e ->
@@ -193,18 +261,23 @@ let private shopAction seq (g: Api.GameState) =
 
             let rule =
                 sprintf
-                    "raises the simulated round score from %.0f to %.0f (+%.0f%%); threshold +%d%%"
+                    "raises the simulated round score from %.0f to %.0f (+%.0f%%); %s%s"
                     e.Before
                     e.After
                     (percent e)
-                    (5 + 5 * e.InterestLost)
+                    (thresholdText (offered e.Offer) (float (5 + 5 * e.InterestLost)))
+                    lastNote
 
             BuyCard(Shop.position e.Offer), decision seq g candidates.Head.Action rule candidates None
         | None ->
             let upgrades =
                 Shop.upgrades seed 20 g.Money build offers
                 |> List.filter (fun u -> not g.Jokers.Cards[u.Sell].Modifier.Eternal)
-
+                |> List.map (fun u ->
+                    { u with
+                        Threshold =
+                            (if lastAnte g then 1.05 else u.Threshold)
+                            + 0.05 * float (stickerLoss (offered u.Offer)) })
 
             match Shop.chooseUpgrade upgrades with
             | Some u ->
@@ -224,13 +297,15 @@ let private shopAction seq (g: Api.GameState) =
 
                 let rule =
                     sprintf
-                        "joker slots are full; selling %s to buy %s raises the simulated round score from %.0f to %.0f (+%.0f%%) for a net cost of $%d; threshold +15%%"
+                        "joker slots are full; selling %s to buy %s raises the simulated round score from %.0f to %.0f (+%.0f%%) for a net cost of $%d; %s%s"
                         sold.Name
                         bought
                         u.Before
                         u.After
                         ((u.After / u.Before - 1.0) * 100.0)
                         u.Net
+                        (thresholdText (offered u.Offer) (((max 1.15 u.Threshold) - 1.0) * 100.0))
+                        lastNote
 
                 let candidates = upgrades |> List.truncate 5 |> List.map candidate
                 SellJoker u.Sell, decision seq g (sprintf "sell %s to buy %s" sold.Name bought) rule candidates None
@@ -255,6 +330,11 @@ let private shopAction seq (g: Api.GameState) =
                 else
                     let slotFree = build.Jokers.Length < build.Situation.JokerSlots
                     let celestial = cheapestPack g "p_celestial"
+                    let floorText =
+                        if lastAnte g then
+                            "interest no longer matters in the last ante"
+                        else
+                            sprintf "stays at or above the $%d interest cap" (interestFloor g)
 
                     match (if slotFree then cheapestPack g "p_buffoon" |> Option.orElse celestial else celestial) with
                     | Some(index, pack) ->
@@ -269,24 +349,24 @@ let private shopAction seq (g: Api.GameState) =
                             g
                             (sprintf "buy %s for $%d" pack.Label pack.Cost.Buy)
                             (sprintf
-                                "%s; $%d left after the $%d pack stays at or above the $%d interest cap"
+                                "%s; $%d left after the $%d pack; %s"
                                 kind
                                 (g.Money - pack.Cost.Buy)
                                 pack.Cost.Buy
-                                interestFloor)
+                                floorText)
                             []
                             None
-                    | None when g.Money - g.Round.RerollCost >= interestFloor && g.Round.RerollCost <= 7 ->
+                    | None when g.Money - g.Round.RerollCost >= interestFloor g && g.Round.RerollCost <= 7 ->
                         Reroll,
                         decision
                             seq
                             g
                             (sprintf "reroll the shop for $%d" g.Round.RerollCost)
                             (sprintf
-                                "$%d left after the $%d reroll stays at or above the $%d interest cap, and the reroll costs at most $7"
+                                "$%d left after the $%d reroll; %s; the reroll costs at most $7"
                                 (g.Money - g.Round.RerollCost)
                                 g.Round.RerollCost
-                                interestFloor)
+                                floorText)
                             []
                             None
                     | None ->
@@ -346,7 +426,7 @@ let private packAction seq (g: Api.GameState) =
 
 let decide (seq: int) (g: Api.GameState) : Action * Decision =
     match g.State with
-    | Api.State.SelectingHand -> chooseAction seq g
+    | Api.State.SelectingHand -> liftVerdantLeaf seq g |> Option.defaultWith (fun () -> chooseAction seq g)
     | Api.State.BlindSelect ->
         let chosen =
             g.Blinds
