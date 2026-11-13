@@ -483,3 +483,6 @@ $RECYCLE.BIN/
 
 # bot run traces
 runs/
+
+# agent worktrees
+.claude/worktrees/
