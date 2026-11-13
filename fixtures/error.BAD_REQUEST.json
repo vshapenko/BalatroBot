@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"data":{"name":"BAD_REQUEST"},"message":"You can only play 5 cards"}}
