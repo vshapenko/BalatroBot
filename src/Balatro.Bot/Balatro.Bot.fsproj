@@ -13,6 +13,7 @@
     <Compile Include="Shop.fs" />
     <Compile Include="Policy.fs" />
     <Compile Include="Runner.fs" />
+    <Compile Include="Batch.fs" />
     <Compile Include="Oracle.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

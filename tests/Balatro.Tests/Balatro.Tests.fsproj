@@ -17,6 +17,7 @@
     <Compile Include="JokersCounterTests.fs" />
     <Compile Include="SearchTests.fs" />
     <Compile Include="ShopTests.fs" />
+    <Compile Include="BatchTests.fs" />
     <Content Include="../../fixtures/**" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
