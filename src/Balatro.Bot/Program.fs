@@ -18,8 +18,33 @@ let private options (args: string list) =
 
     go [] args
 
+let private oracle (rest: string list) =
+    match options rest with
+    | Some o when o.Keys |> Seq.forall (fun k -> k = "--keys" || k = "--url") ->
+        let keys =
+            match Map.tryFind "--keys" o with
+            | Some k -> k.Split ',' |> List.ofArray
+            | None -> Balatro.Core.JokerRegistry.implemented |> Set.toList
+
+        let url = Map.tryFind "--url" o |> Option.defaultValue "http://127.0.0.1:12346"
+
+        match Oracle.run (Api.create url) keys "runs/oracle" with
+        | Ok(exact, total) ->
+            printfn "oracle: %d/%d exact, %d keys" exact total keys.Length
+            0
+        | Error e ->
+            eprintfn "API error: %A" e
+            1
+    | _ ->
+        eprintfn "usage: oracle [--keys k1,k2,...] [--url <URL>]"
+        2
+
 [<EntryPoint>]
 let main argv =
+    match List.ofArray argv with
+    | "oracle" :: rest -> oracle rest
+    | _ ->
+
     let parsed =
         match List.ofArray argv with
         | "run" :: rest ->

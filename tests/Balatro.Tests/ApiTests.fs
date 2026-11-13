@@ -116,3 +116,14 @@ let ``unknown state is an error`` () =
     match decodeGameState e with
     | Error m -> Assert.Contains("NOPE", m)
     | Ok _ -> failwith "expected Error"
+
+[<Fact>]
+let ``add and set encode their parameters`` () =
+    let added = JsonDocument.Parse(encodeRequest "add" (addParameters "j_joker")).RootElement
+    Assert.Equal("add", added.GetProperty("method").GetString())
+    Assert.Equal("j_joker", added.GetProperty("params").GetProperty("key").GetString())
+
+    let set = JsonDocument.Parse(encodeRequest "set" (setParameters [ "chips", -5; "hands", 4 ])).RootElement
+    Assert.Equal("set", set.GetProperty("method").GetString())
+    Assert.Equal(-5, set.GetProperty("params").GetProperty("chips").GetInt32())
+    Assert.Equal(4, set.GetProperty("params").GetProperty("hands").GetInt32())

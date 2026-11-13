@@ -746,3 +746,12 @@ let rearrange client order =
         | RearrangeConsumables xs -> "consumables", ints xs
 
     game client "rearrange" [ p ]
+
+let addParameters (key: string) = [ "key", JsonValue.Create key :> JsonNode ]
+
+let add client (key: string) = game client "add" (addParameters key)
+
+let setParameters (fields: (string * int) list) =
+    fields |> List.map (fun (k, v) -> k, int' v)
+
+let set client (fields: (string * int) list) = game client "set" (setParameters fields)
