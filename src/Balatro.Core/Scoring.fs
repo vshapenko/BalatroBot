@@ -92,6 +92,7 @@ let scoreWith (situation: Situation) (input: ScoreInput) : ScoreBreakdown =
     let opening: Context =
         { Played = input.Played
           Scoring = (if rules.Splash then input.Played else classified)
+          Seen = (if rules.Splash then input.Played else classified)
           Held = input.Held
           HandType = handType
           Contained = contained rules input.Played
@@ -108,10 +109,10 @@ let scoreWith (situation: Situation) (input: ScoreInput) : ScoreBreakdown =
                     cards, seen
                 else
                     let def = JokerRegistry.find joker.Key
-                    def.BeforeCards { opening with Scoring = cards } joker cards, Map.add i cards seen)
+                    def.BeforeCards { opening with Scoring = cards; Seen = cards } joker cards, Map.add i cards seen)
             (opening.Scoring, Map.empty)
 
-    let context = { opening with Scoring = scoring }
+    let context = { opening with Scoring = scoring; Seen = scoring }
 
     let actors =
         jokers
@@ -185,7 +186,7 @@ let scoreWith (situation: Situation) (input: ScoreInput) : ScoreBreakdown =
                 match resolve jokers i with
                 | Some target ->
                     let def = JokerRegistry.find jokers[target].Key
-                    def.Main { context with Scoring = seenByJoker[target] } jokers[target]
+                    def.Main { context with Seen = seenByJoker[target] } jokers[target]
                 | None -> []
 
             // Baseball Card reacts to every Uncommon joker other than itself, debuffed or not

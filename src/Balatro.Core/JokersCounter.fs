@@ -20,6 +20,6 @@ let defs: (string * JokerDef) list =
           // the context holds the cards as this joker's before step received them
           Main =
             fun context joker ->
-                let stripped = context.Scoring |> List.filter isEnhanced |> List.length
+                let stripped = context.Seen |> List.filter isEnhanced |> List.length
                 let factor = value joker + 0.1 * float stripped
                 if factor > 1.0 then [ TimesMult factor ] else [] } ]

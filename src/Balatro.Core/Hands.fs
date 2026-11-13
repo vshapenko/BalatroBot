@@ -73,7 +73,7 @@ let private straightCards rules (indexed: (int * Card) list) =
                 | None -> walk (id + 1) 0 false false []
 
         match walk 1 0 false false [] with
-        | true, taken -> Some(List.distinctBy fst taken)
+        | true, taken -> Some taken
         | false, _ -> None
 
 // Every hand type the cards contain, best first, each with the cards that score for it

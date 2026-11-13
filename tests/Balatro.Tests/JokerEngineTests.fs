@@ -33,7 +33,8 @@ let private joker key name : Joker =
       Edition = None
       Debuffed = false
       Value = None
-      SellValue = 0 }
+      SellValue = 0
+      Text = "" }
 
 let private withEdition edition (j: Joker) = { j with Edition = Some edition }
 let private withValue value (j: Joker) = { j with Value = Some value }
@@ -237,3 +238,86 @@ let ``currentValue reads the counter of a joker text`` () =
       "j_cloud_9", Some 4.0
       "j_joker", None ]
     |> List.iter (fun (key, expected) -> Assert.Equal(expected, Mapping.currentValue (fixtureEffect key)))
+
+let private greenJoker = joker "j_green_joker" "Green Joker"
+let private hangingChad = joker "j_hanging_chad" "Hanging Chad"
+let private vampire = joker "j_vampire" "Vampire"
+
+let private load name =
+    let text = File.ReadAllText(AppContext.BaseDirectory + "fixtures/" + name)
+
+    match Api.decodeGameState (JsonDocument.Parse(text).RootElement) with
+    | Ok g -> g
+    | Error e -> failwithf "%s: %s" name e
+
+[<Fact>]
+let ``Baseball Card reacts to a debuffed Uncommon joker but not when debuffed itself`` () =
+    Assert.Equal(90.0, total [ baseball; mime |> debuffed ] kk [])
+    Assert.Equal(60.0, total [ baseball |> debuffed; mime ] kk [])
+
+[<Fact>]
+let ``Brainstorm in the leftmost slot copies the joker on its right`` () =
+    Assert.Equal(60.0, total [ brainstorm ] kk [])
+    Assert.Equal(180.0, total [ brainstorm; jokerJoker ] kk [])
+
+[<Fact>]
+let ``Blueprint and Brainstorm facing each other copy nothing`` () =
+    Assert.Equal(60.0, total [ blueprint; brainstorm ] kk [])
+
+[<Fact>]
+let ``A copy chain runs through Blueprint and Brainstorm`` () =
+    Assert.Equal(420.0, total [ jokerJoker; blueprint; brainstorm ] kk [])
+
+[<Fact>]
+let ``A copier applies its own edition at its own slot`` () =
+    Assert.Equal(390.0, total [ blueprint |> withEdition Polychrome; jokerJoker ] kk [])
+
+[<Fact>]
+let ``A debuffed copier or a debuffed target copies nothing`` () =
+    Assert.Equal(60.0, total [ blueprint; jokerJoker |> debuffed ] kk [])
+    Assert.Equal(180.0, total [ blueprint |> debuffed; jokerJoker ] kk [])
+
+[<Fact>]
+let ``Blueprint copies Baseball Card`` () =
+    Assert.Equal(135.0, total [ blueprint; baseball; mime ] kk [])
+
+[<Fact>]
+let ``Blueprint copies a counter joker with its value`` () =
+    Assert.Equal(300.0, total [ blueprint; greenJoker |> withValue 3.0 ] kk [])
+
+[<Fact>]
+let ``Blueprint copies a retrigger`` () =
+    Assert.Equal(140.0, total [ blueprint; hangingChad ] kk [])
+
+[<Fact>]
+let ``A Red Seal and Hanging Chad retrigger additively`` () =
+    let played = [ { card King Spades with Seal = Some Seal.Red }; card King Hearts ]
+    Assert.Equal(120.0, total [ hangingChad ] played [])
+
+[<Fact>]
+let ``Mime does nothing for a held card without an effect`` () =
+    Assert.Equal(60.0, total [ mime ] kk [ card Five Clubs ])
+
+[<Fact>]
+let ``Blueprint copies Vampire and sees the cards as Vampire received them`` () =
+    let played = [ card King Spades |> withEnhancement Enhancement.Bonus; card King Hearts ]
+    Assert.Equal(72.0, total [ blueprint; vampire |> withValue 1.0 ] played [])
+
+[<Fact>]
+let ``Two Vampires each count the cards they received`` () =
+    let played = [ card King Spades |> withEnhancement Enhancement.Bonus; card King Hearts ]
+    Assert.Equal(66.0, total [ vampire |> withValue 1.0; vampire |> withValue 1.0 ] played [])
+
+[<Fact>]
+let ``Mapping.situation counts the plays of every hand type`` () =
+    let situation = Mapping.situation (load "gamestate.SELECTING_HAND.json")
+    Assert.Equal(12, situation.HandPlays.Count)
+    Assert.True(situation.HandPlays |> Map.forall (fun _ plays -> plays = (0, 0)))
+    Assert.Equal(3, situation.HandsLeft)
+
+[<Fact>]
+let ``Mapping.joker carries the effect text`` () =
+    let state = load "gamestate.SHOP.with_joker.json"
+    let joker = Mapping.joker (List.exactlyOne state.Jokers.Cards)
+    Assert.Equal("j_popcorn", joker.Key)
+    Assert.StartsWith("+20 Mult", joker.Text)

@@ -100,7 +100,8 @@ let joker (card: Api.Card) : Jokers.Joker =
       Edition = card.Modifier.Edition |> Option.map edition
       Debuffed = card.State.Debuff
       Value = currentValue card.Value.Effect
-      SellValue = card.Cost.Sell }
+      SellValue = card.Cost.Sell
+      Text = card.Value.Effect }
 
 let situation (state: Api.GameState) : Jokers.Situation =
     { Jokers = state.Jokers.Cards |> List.map joker
@@ -108,4 +109,10 @@ let situation (state: Api.GameState) : Jokers.Situation =
       DiscardsLeft = state.Round.DiscardsLeft
       Money = state.Money
       DeckCount = state.Cards.Count
-      JokerSlots = state.Jokers.Limit }
+      JokerSlots = state.Jokers.Limit
+      HandPlays =
+        handTypes
+        |> List.map (fun t ->
+            let info = state.Hands[HandType.label t]
+            t, (info.Played, info.PlayedThisRound))
+        |> Map.ofList }

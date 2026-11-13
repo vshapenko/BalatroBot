@@ -9,7 +9,8 @@ type Joker =
       Edition: Edition option
       Debuffed: bool
       Value: float option
-      SellValue: int }
+      SellValue: int
+      Text: string }
 
 type Situation =
     { Jokers: Joker list
@@ -17,7 +18,8 @@ type Situation =
       DiscardsLeft: int
       Money: int
       DeckCount: int
-      JokerSlots: int }
+      JokerSlots: int
+      HandPlays: Map<HandType, int * int> }
 
 module Situation =
     let empty =
@@ -26,11 +28,13 @@ module Situation =
           DiscardsLeft = 0
           Money = 0
           DeckCount = 0
-          JokerSlots = 0 }
+          JokerSlots = 0
+          HandPlays = Map.empty }
 
 type Context =
     { Played: Card list
       Scoring: Card list
+      Seen: Card list
       Held: Card list
       HandType: HandType
       Contained: Set<HandType>
