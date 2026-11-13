@@ -227,16 +227,22 @@ let private shopAction seq (g: Api.GameState) =
                 | _ -> None)
 
         let seed = shopSeed g
+        let owned = build.Jokers.Length
+        let early = owned < 3
+
         let lastNote = if lastAnte g then "; interest no longer matters in the last ante" else ""
+        let earlyNote = if early && not (lastAnte g) then "; fewer than 3 jokers owned: interest not counted" else ""
+
         let offered (offer: Shop.Offer) = g.Shop.Cards[Shop.position offer]
 
         let evaluated =
             Shop.evaluate seed 20 g.Money build offers
             |> List.map (fun e ->
                 { e with
-                    InterestLost = (if lastAnte g then 0 else e.InterestLost) + stickerLoss (offered e.Offer) })
+                    InterestLost = (if lastAnte g || early then 0 else e.InterestLost) + stickerLoss (offered e.Offer) })
 
         let percent (e: Shop.Evaluated) = (e.After / e.Before - 1.0) * 100.0
+        let needed (e: Shop.Evaluated) = (Shop.threshold owned e - 1.0) * 100.0
 
         let candidate (e: Shop.Evaluated) : Candidate =
             let name = offerName e.Offer
@@ -254,7 +260,7 @@ let private shopAction seq (g: Api.GameState) =
                     (percent e)
                     (e.InterestLost - stickerLoss (offered e.Offer)) }
 
-        match Shop.choose evaluated with
+        match Shop.choose owned evaluated with
         | Some e ->
             let others = evaluated |> List.filter (fun o -> Shop.position o.Offer <> Shop.position e.Offer)
             let candidates = e :: others |> List.truncate 5 |> List.map candidate
@@ -265,8 +271,8 @@ let private shopAction seq (g: Api.GameState) =
                     e.Before
                     e.After
                     (percent e)
-                    (thresholdText (offered e.Offer) (float (5 + 5 * e.InterestLost)))
-                    lastNote
+                    (thresholdText (offered e.Offer) (needed e))
+                    (lastNote + earlyNote)
 
             BuyCard(Shop.position e.Offer), decision seq g candidates.Head.Action rule candidates None
         | None ->
@@ -370,14 +376,36 @@ let private shopAction seq (g: Api.GameState) =
                             []
                             None
                     | None ->
-                        let rule =
-                            if evaluated.IsEmpty then
-                                let slotsFull = offers |> List.exists (function Shop.JokerOffer(_, _, cost) -> cost <= g.Money | _ -> false)
-                                if slotsFull then "joker slots are full" else "nothing affordable in the shop"
-                            else
-                                "nothing in the shop raises the simulated round score enough"
+                        match evaluated with
+                        | [] ->
+                            let slotsFull = offers |> List.exists (function Shop.JokerOffer(_, _, cost) -> cost <= g.Money | _ -> false)
+                            let rule = if slotsFull then "joker slots are full" else "nothing affordable in the shop"
+                            passive seq g NextRound "next round" rule
+                        | best :: _ ->
+                            let declined (e: Shop.Evaluated) : Candidate =
+                                let name = offerName e.Offer
+                                let cost = Shop.cost e.Offer
 
-                        passive seq g NextRound "next round" rule
+                                { Action = sprintf "buy %s for $%d" name cost
+                                  Value = e.After
+                                  Detail =
+                                    sprintf
+                                        "%s, $%d, round score %.0f -> %.0f (%+.0f%%), needed +%.0f%%"
+                                        name
+                                        cost
+                                        e.Before
+                                        e.After
+                                        (percent e)
+                                        (needed e) }
+
+                            let rule =
+                                sprintf
+                                    "best offer %s raises the simulated round score by %.0f%%, below the %.0f%% threshold"
+                                    (offerName best.Offer)
+                                    (percent best)
+                                    (needed best)
+
+                            NextRound, decision seq g "next round" rule (evaluated |> List.truncate 5 |> List.map declined) None
 
 let private packAction seq (g: Api.GameState) =
     let build = shopBuild g

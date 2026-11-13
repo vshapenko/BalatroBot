@@ -100,9 +100,9 @@ let ``interest lost is the interest the purchase costs`` () =
 
 [<Fact>]
 let ``choose needs the gain to clear the interest adjusted threshold`` () =
-    Assert.Equal(Some(entry 1.30 0), choose [ entry 1.30 0 ])
-    Assert.Equal(None, choose [ entry 1.06 1 ])
-    Assert.Equal(None, choose [])
+    Assert.Equal(Some(entry 1.30 0), choose 3 [ entry 1.30 0 ])
+    Assert.Equal(None, choose 3 [ entry 1.06 1 ])
+    Assert.Equal(None, choose 3 [])
 
 [<Fact>]
 let ``best order puts the additive joker before the multiplier`` () =
@@ -448,7 +448,7 @@ let ``a sticker adds its dollars per round to the buy threshold`` () =
     let perishable = { plain with Modifier = { plain.Modifier with Perishable = Some 5 } }
 
     let bought card gain =
-        (choose [ { entry gain 0 with InterestLost = Policy.stickerLoss card } ]).IsSome
+        (choose 3 [ { entry gain 0 with InterestLost = Policy.stickerLoss card } ]).IsSome
 
     Assert.False(bought rental 1.15)
     Assert.True(bought rental 1.25)
@@ -535,3 +535,36 @@ let ``a build without decaying jokers is scored as one round`` () =
     let owned = build [ joker "j_joker" ]
     let e = evaluate 100 8 10 owned [ jupiter 3 ] |> List.exactlyOne
     Assert.Equal(roundScore 100 8 (revalue owned), e.Before)
+
+[<Fact>]
+let ``with fewer than 3 jokers owned the buy threshold is 1.02 and ignores interest`` () =
+    Assert.True((choose 0 [ entry 1.03 0 ]).IsSome)
+    Assert.True((choose 3 [ entry 1.03 1 ]).IsNone)
+
+[<Fact>]
+let ``a sticker still adds its dollars to the early buy threshold`` () =
+    let plain = jokerCard "j_joker" "Joker"
+    let rental = { plain with Modifier = { plain.Modifier with Rental = true } }
+    let bought gain = (choose 0 [ entry gain (Policy.stickerLoss rental) ]).IsSome
+
+    Assert.False(bought 1.10)
+    Assert.True(bought 1.20)
+
+[<Fact>]
+let ``a declined shop visit lists the offers and names the best one`` () =
+    let g = load "SHOP"
+    let egg = jokerCard "j_egg" "Egg"
+
+    let declined =
+        withoutPacks
+            { g with
+                Money = 10
+                Round = { g.Round with RerollCost = 8 }
+                Shop = { g.Shop with Cards = [ { egg with Cost = { egg.Cost with Buy = 1 } } ] } }
+
+    let action, decision = Policy.decide 1 declined
+    Assert.Equal(Policy.NextRound, action)
+    Assert.Equal(1, decision.Candidates.Length)
+    Assert.Equal("buy Egg for $1", decision.Candidates.Head.Action)
+    Assert.StartsWith("best offer Egg raises the simulated round score by ", decision.Rule)
+    Assert.EndsWith("below the 2% threshold", decision.Rule)

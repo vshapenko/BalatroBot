@@ -186,9 +186,12 @@ let evaluate (seed: int) (samples: int) (money: int) (build: Build) (offers: Off
           InterestLost = interest money - interest (money - cost offer) })
     |> List.sortBy (fun e -> -(e.After / e.Before), cost e.Offer, position e.Offer)
 
-let choose (evaluated: Evaluated list) : Evaluated option =
-    evaluated
-    |> List.tryFind (fun e -> e.After / e.Before >= 1.05 + 0.05 * float e.InterestLost)
+// early in a run the caller passes InterestLost without interest: joker power matters more than saving
+let threshold (owned: int) (e: Evaluated) : float =
+    (if owned < 3 then 1.02 else 1.05) + 0.05 * float e.InterestLost
+
+let choose (owned: int) (evaluated: Evaluated list) : Evaluated option =
+    evaluated |> List.tryFind (fun e -> e.After / e.Before >= threshold owned e)
 
 let rec private permutations (items: int list) : int list list =
     match items with
