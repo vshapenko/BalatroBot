@@ -10,6 +10,7 @@
     <Compile Include="Mapping.fs" />
     <Compile Include="Decision.fs" />
     <Compile Include="Search.fs" />
+    <Compile Include="Shop.fs" />
     <Compile Include="Policy.fs" />
     <Compile Include="Runner.fs" />
     <Compile Include="Oracle.fs" />
