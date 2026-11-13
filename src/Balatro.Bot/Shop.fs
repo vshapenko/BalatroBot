@@ -24,7 +24,7 @@ type Evaluated =
       After: float
       InterestLost: int }
 
-let private simulate (build: Build) (shuffle: Card[]) : float =
+let private simulate (build: Build) (shuffle: Card[]) : float * (Card list * Scoring.ScoreBreakdown) list =
     let score plays handsLeftAfter discardsLeft played held =
         Scoring.scoreWith
             { build.Situation with
@@ -40,9 +40,9 @@ let private simulate (build: Build) (shuffle: Card[]) : float =
         let count = min (build.HandSize - kept.Length) (shuffle.Length - taken)
         kept @ List.ofArray shuffle[taken .. taken + count - 1], taken + count
 
-    let rec play (hand: Card list) taken handsLeft plays total =
+    let rec play (hand: Card list) taken handsLeft plays total hands =
         if handsLeft = 0 then
-            total
+            total, List.rev hands
         else
             let input: Search.Input =
                 { Hand = List.indexed hand
@@ -56,7 +56,7 @@ let private simulate (build: Build) (shuffle: Card[]) : float =
                   RedrawSamples = 0
                   Rollouts = 0 }
 
-            let positions, _, best = (Search.plays input).Head
+            let positions, played, best = (Search.plays input).Head
 
             let kept =
                 hand
@@ -66,18 +66,65 @@ let private simulate (build: Build) (shuffle: Card[]) : float =
 
             let next, taken = draw kept taken
             let run, round = plays |> Map.tryFind best.HandType |> Option.defaultValue (0, 0)
-            play next taken (handsLeft - 1) (Map.add best.HandType (run + 1, round + 1) plays) (total + best.Total)
+
+            play
+                next
+                taken
+                (handsLeft - 1)
+                (Map.add best.HandType (run + 1, round + 1) plays)
+                (total + best.Total)
+                ((played, best) :: hands)
 
     let hand, taken = draw [] 0
     let plays = build.Situation.HandPlays |> Map.map (fun _ (run, _) -> run, 0)
-    play hand taken build.Hands plays 0.0
+    play hand taken build.Hands plays 0.0 []
 
-let roundScore (seed: int) (samples: int) (build: Build) : float =
+let private rounds (seed: int) (samples: int) (build: Build) =
     Array.init samples (fun s ->
         let cards = Array.ofList build.Deck
         Random(seed + s).Shuffle cards
         simulate build cards)
-    |> Array.average
+
+let roundScore (seed: int) (samples: int) (build: Build) : float =
+    rounds seed samples build |> Array.averageBy fst
+
+// per-round averages over the simulated hands
+type Rates =
+    { Straights: float
+      Fours: float
+      Pairs2: float
+      Twos: float
+      Faceless: bool
+      Plays: Map<HandType, float> }
+
+let roundStats (seed: int) (samples: int) (build: Build) : float * Rates =
+    let sampled = rounds seed samples build
+    let rules = JokerRegistry.rules build.Jokers
+    let hands = sampled |> Array.collect (snd >> Array.ofList)
+    let perRound count = float count / float samples
+
+    let containing types =
+        hands
+        |> Array.filter (fun (played, _) ->
+            let found = Hands.contained rules played
+            types |> List.exists found.Contains)
+        |> Array.length
+
+    let scored = hands |> Array.collect (fun (_, best) -> Array.ofList best.ScoringCards)
+
+    let score = sampled |> Array.averageBy fst
+
+    score,
+    { Straights = perRound (containing [ Straight ])
+      Fours = perRound (hands |> Array.filter (fun (played, _) -> played.Length = 4) |> Array.length)
+      Pairs2 = perRound (containing [ TwoPair; FullHouse ])
+      Twos = perRound (scored |> Array.filter (fun card -> card.Rank = Two) |> Array.length)
+      Faceless = scored |> Array.forall (fun card -> card.Rank <> Jack && card.Rank <> Queen && card.Rank <> King)
+      Plays =
+        hands
+        |> Array.countBy (fun (_, best) -> best.HandType)
+        |> Array.map (fun (handType, count) -> handType, perRound count)
+        |> Map.ofArray }
 
 let private interest money = min 5 (money / 5)
 
@@ -137,9 +184,46 @@ let decay (build: Build) (rounds: int) : Build =
 
     { build with Jokers = build.Jokers |> List.map aged }
 
+let private growing =
+    set [ "j_runner"; "j_square"; "j_trousers"; "j_wee"; "j_ride_the_bus"; "j_supernova" ]
+
+let grow (rates: Rates) (rounds: int) (build: Build) : Build =
+    let ahead = float rounds
+
+    let add rate (joker: Jokers.Joker) =
+        { joker with Value = Some(Option.defaultValue 0.0 joker.Value + ahead * rate) }
+
+    let grown (joker: Jokers.Joker) =
+        match joker.Key with
+        | "j_runner" -> add (15.0 * rates.Straights) joker
+        | "j_square" -> add (4.0 * rates.Fours) joker
+        | "j_trousers" -> add (2.0 * rates.Pairs2) joker
+        | "j_wee" -> add (8.0 * rates.Twos) joker
+        | "j_ride_the_bus" when rates.Faceless -> add (float build.Hands) joker
+        | _ -> joker
+
+    let plays =
+        if build.Jokers |> List.exists (fun joker -> joker.Key = "j_supernova") then
+            build.Situation.HandPlays
+            |> Map.map (fun handType (run, round) ->
+                let more = rates.Plays |> Map.tryFind handType |> Option.defaultValue 0.0
+                run + int (Math.Round(ahead * more)), round)
+        else
+            build.Situation.HandPlays
+
+    { build with
+        Jokers = build.Jokers |> List.map grown
+        Situation = { build.Situation with HandPlays = plays } }
+
 let private horizon (seed: int) (samples: int) (build: Build) : float =
-    if build.Jokers |> List.exists (fun joker -> decaying.Contains joker.Key) then
-        [ 0; 1; 2 ] |> List.averageBy (fun rounds -> roundScore seed samples (revalue (decay build rounds)))
+    if build.Jokers |> List.exists (fun joker -> decaying.Contains joker.Key || growing.Contains joker.Key) then
+        let score0, rates = roundStats seed samples (revalue build)
+
+        let later =
+            [ 1; 2 ]
+            |> List.map (fun rounds -> roundScore seed samples (revalue (grow rates rounds (decay build rounds))))
+
+        score0 :: later |> List.average
     else
         roundScore seed samples (revalue build)
 

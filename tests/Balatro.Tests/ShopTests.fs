@@ -568,3 +568,53 @@ let ``a declined shop visit lists the offers and names the best one`` () =
     Assert.Equal("buy Egg for $1", decision.Candidates.Head.Action)
     Assert.StartsWith("best offer Egg raises the simulated round score by ", decision.Rule)
     Assert.EndsWith("below the 2% threshold", decision.Rule)
+
+let private rates =
+    { Straights = 2.0
+      Fours = 1.0
+      Pairs2 = 1.5
+      Twos = 3.0
+      Faceless = true
+      Plays = Map.ofList [ Pair, 4.0 ] }
+
+let private growing =
+    { build
+        [ { joker "j_runner" with Value = Some 30.0 }
+          joker "j_square"
+          { joker "j_trousers" with Value = Some 4.0 }
+          { joker "j_wee" with Value = Some 8.0 }
+          { joker "j_ride_the_bus" with Value = Some 1.0 }
+          joker "j_supernova" ] with
+        Situation = { Jokers.Situation.empty with JokerSlots = 6; HandPlays = Map.ofList [ Pair, (5, 1) ] } }
+
+[<Fact>]
+let ``grow adds the coming rounds of each growing joker and of the Supernova hand count`` () =
+    let grown = grow rates 2 growing
+
+    Assert.Equal<float option list>(
+        [ Some 90.0; Some 8.0; Some 10.0; Some 56.0; Some 9.0; None ],
+        grown.Jokers |> List.map (fun j -> j.Value)
+    )
+
+    Assert.Equal((13, 1), grown.Situation.HandPlays[Pair])
+
+[<Fact>]
+let ``grow leaves Ride the Bus alone when a face card scored`` () =
+    let grown = grow { rates with Faceless = false } 2 growing
+    Assert.Equal(Some 1.0, grown.Jokers[4].Value)
+
+[<Fact>]
+let ``round stats start with the round score and count the hands played`` () =
+    let score, stats = roundStats 100 10 (build [])
+    Assert.Equal(roundScore 100 10 (build []), score)
+    Assert.Equal(4.0, stats.Plays.Values |> Seq.sum)
+
+[<Fact>]
+let ``a Runner offer is worth its growth on a deck that makes straights`` () =
+    let low = { build [] with Deck = deck |> List.filter (fun c -> c.Rank <= Six) }
+    let runner = joker "j_runner"
+    let e = evaluate 100 8 10 low [ JokerOffer(0, runner, 5) ] |> List.exactlyOne
+    let flat = roundScore 100 8 (revalue { low with Jokers = [ runner ] })
+    printfn "Runner offer After %f, round score with Runner %f" e.After flat
+    Assert.Equal(20, low.Deck.Length)
+    Assert.True(e.After > flat)
