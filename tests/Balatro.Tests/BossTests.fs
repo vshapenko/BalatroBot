@@ -188,3 +188,8 @@ let ``The Arm lowers every hand above level 1 by one level`` () =
 let ``another boss keeps the wire hand values`` () =
     let state = load "SELECTING_HAND" |> withBoss "The Hook" |> pairAtLevel3
     Assert.Equal({ Chips = 40.0; Mult = 4.0 }, (Mapping.levels state)[Pair])
+
+[<Fact>]
+let ``The Flint is not mapped because the modded game does not halve`` () =
+    let g = load "SELECTING_HAND" |> withBoss "The Flint"
+    Assert.Equal(None, Mapping.boss g)

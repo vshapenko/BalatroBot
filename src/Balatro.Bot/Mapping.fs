@@ -91,7 +91,7 @@ let boss (state: Api.GameState) : Jokers.Boss option =
     | Some "The Psychic" -> Some Jokers.Psychic
     | Some "The Eye" -> Some Jokers.Eye
     | Some "The Mouth" -> Some Jokers.Mouth
-    | Some "The Flint" -> Some Jokers.Flint
+    // The Flint is not mapped: on the pinned Steamodded build the game does not halve the base values.
     | _ -> None
 
 let levels (state: Api.GameState) : Map<HandType, HandLevel> =
