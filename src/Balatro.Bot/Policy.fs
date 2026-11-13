@@ -10,6 +10,9 @@ type Action =
     | SelectBlind
     | CashOut
     | NextRound
+    | BuyCard of int
+    | UsePlanet of int
+    | ReorderJokers of int list
     | SkipPack
     | Stop
 
@@ -99,13 +102,107 @@ let private chooseAction seq (g: Api.GameState) =
         Play indices, decision seq g candidates.Head.Action rule candidates (Some best.Total)
     | Search.DiscardCards(indices, _) -> Discard indices, decision seq g candidates.Head.Action rule candidates None
 
+let private planetHand key =
+    match key with
+    | "c_mercury" -> Some Pair
+    | "c_venus" -> Some ThreeOfAKind
+    | "c_earth" -> Some FullHouse
+    | "c_mars" -> Some FourOfAKind
+    | "c_jupiter" -> Some Flush
+    | "c_saturn" -> Some Straight
+    | "c_uranus" -> Some TwoPair
+    | "c_neptune" -> Some StraightFlush
+    | "c_pluto" -> Some HighCard
+    | "c_planet_x" -> Some FiveOfAKind
+    | "c_ceres" -> Some FlushHouse
+    | "c_eris" -> Some FlushFive
+    | _ -> None
+
+let private offerName offer =
+    match offer with
+    | Shop.JokerOffer(_, joker, _) -> joker.Name
+    | Shop.PlanetOffer(_, _, name, _) -> name
+
+let private shopAction seq (g: Api.GameState) =
+    match g.Consumables.Cards |> List.tryFindIndex (fun c -> c.Set = Api.CardSet.Planet) with
+    | Some index ->
+        let name = g.Consumables.Cards[index].Label
+        UsePlanet index, decision seq g ("use " + name) "use the planet bought in the shop" [] None
+    | None ->
+        let situation = Mapping.situation g
+
+        let build: Shop.Build =
+            { Jokers = situation.Jokers
+              Levels = Mapping.levels g
+              Deck = g.Cards.Cards |> List.choose Mapping.toCard
+              HandSize = g.Hand.Limit
+              Hands = g.Round.HandsLeft
+              Situation = situation }
+
+        let offers =
+            g.Shop.Cards
+            |> List.indexed
+            |> List.choose (fun (i, c) ->
+                match c.Set with
+                | Api.CardSet.Joker -> Some(Shop.JokerOffer(i, Mapping.joker c, c.Cost.Buy))
+                | Api.CardSet.Planet when g.Consumables.Count < g.Consumables.Limit ->
+                    planetHand c.Key |> Option.map (fun hand -> Shop.PlanetOffer(i, hand, c.Label, c.Cost.Buy))
+                | _ -> None)
+
+        let seed = seq * 100
+        let evaluated = Shop.evaluate seed 20 g.Money build offers
+        let percent (e: Shop.Evaluated) = (e.After / e.Before - 1.0) * 100.0
+
+        let candidate (e: Shop.Evaluated) : Candidate =
+            let name = offerName e.Offer
+            let cost = Shop.cost e.Offer
+
+            { Action = sprintf "buy %s for $%d" name cost
+              Value = e.After
+              Detail =
+                sprintf
+                    "%s, $%d, round score %.0f -> %.0f (%+.0f%%), interest lost $%d"
+                    name
+                    cost
+                    e.Before
+                    e.After
+                    (percent e)
+                    e.InterestLost }
+
+        match Shop.choose evaluated with
+        | Some e ->
+            let others = evaluated |> List.filter (fun o -> Shop.position o.Offer <> Shop.position e.Offer)
+            let candidates = e :: others |> List.truncate 5 |> List.map candidate
+
+            let rule =
+                sprintf
+                    "raises the simulated round score from %.0f to %.0f (+%.0f%%); threshold +%d%%"
+                    e.Before
+                    e.After
+                    (percent e)
+                    (5 + 5 * e.InterestLost)
+
+            BuyCard(Shop.position e.Offer), decision seq g candidates.Head.Action rule candidates None
+        | None ->
+            let order = Shop.bestOrder seed 20 build
+
+            if order <> [ 0 .. build.Jokers.Length - 1 ] then
+                let names = order |> List.map (fun i -> build.Jokers[i].Name) |> String.concat ", "
+
+                ReorderJokers order,
+                decision seq g (sprintf "reorder jokers to [%s]" names) "joker order with the highest simulated round score" [] None
+            elif evaluated.IsEmpty then
+                passive seq g NextRound "next round" "nothing affordable in the shop"
+            else
+                passive seq g NextRound "next round" "nothing in the shop raises the simulated round score enough"
+
 let decide (seq: int) (g: Api.GameState) : Action * Decision =
     match g.State with
     | Api.State.SelectingHand -> chooseAction seq g
     | Api.State.BlindSelect ->
         passive seq g SelectBlind "select blind" "skeleton policy only selects the blind in this phase"
     | Api.State.RoundEval -> passive seq g CashOut "cash out" "skeleton policy only cashes out in this phase"
-    | Api.State.Shop -> passive seq g NextRound "next round" "skeleton policy leaves the shop without buying"
+    | Api.State.Shop -> shopAction seq g
     | Api.State.SmodsBoosterOpened -> passive seq g SkipPack "skip pack" "skeleton policy skips every pack"
     | Api.State.GameOver -> passive seq g Stop "stop" "game is over"
     | other -> passive seq g Stop "stop" (sprintf "unexpected state %A, skeleton policy stops" other)

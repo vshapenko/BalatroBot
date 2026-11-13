@@ -46,7 +46,6 @@ let ``policy plays the best immediate hand`` () =
 let ``policy handles the other phases`` () =
     Assert.Equal(Policy.SelectBlind, fst (Policy.decide 1 (load "BLIND_SELECT")))
     Assert.Equal(Policy.CashOut, fst (Policy.decide 1 (load "ROUND_EVAL")))
-    Assert.Equal(Policy.NextRound, fst (Policy.decide 1 (load "SHOP")))
     Assert.Equal(Policy.Stop, fst (Policy.decide 1 (load "GAME_OVER")))
 
 [<Fact>]
