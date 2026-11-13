@@ -52,38 +52,49 @@ let private chooseAction seq (g: Api.GameState) =
     let input: Search.Input =
         { Hand = hand
           Deck = g.Cards.Cards |> List.choose Mapping.toCard
+          HandsLeft = g.Round.HandsLeft
+          HandSize = g.Hand.Limit
           DiscardsLeft = g.Round.DiscardsLeft
           Needed = float (blind.Score - g.Round.Chips)
-          Score = fun played held -> Scoring.score { Played = played; Held = held; Levels = levels }
-          Seed = seq
-          Samples = 12 }
+          Score =
+            fun handsLeftAfter played held ->
+                Scoring.scoreWith
+                    { Mapping.situation g with
+                        HandsLeft = handsLeftAfter }
+                    { Played = played
+                      Held = held
+                      Levels = levels }
+          Seed = seq * 100
+          RedrawSamples = 8
+          Rollouts = 40 }
 
-    let playCandidates =
-        Search.plays input
-        |> List.truncate 5
-        |> List.map (fun (indices, played, b) ->
+    let candidate (c: Search.Candidate, outlook: Search.Outlook) : Candidate =
+        let outcome =
+            sprintf
+                "clears in %.0f%% of simulated rounds, %.1f hands on average, %.0f chips on average"
+                (outlook.Clears * 100.0)
+                outlook.MeanHands
+                outlook.MeanChips
+
+        match c with
+        | Search.PlayCards(positions, played, b) ->
             { Action = describe b played
               Value = b.Total
-              Detail = sprintf "positions %A, %.0f chips x %.0f mult" indices b.Chips b.Mult })
-
-    match Search.choose input with
-    | Search.PlayNow(indices, _, best), rule ->
-        Play indices, decision seq g playCandidates.Head.Action rule playCandidates (Some best.Total)
-    | Search.DiscardNow(indices, value), rule ->
-        let discardCandidate (positions: int list, expected: float) =
+              Detail = sprintf "%s; positions %A, scores %.0f now" outcome positions b.Total }
+        | Search.DiscardCards(positions, expected) ->
             let cards = positions |> List.map (fun i -> symbol (List.find (fst >> (=) i) hand |> snd))
 
             { Action = sprintf "discard [%s]" (String.concat " " cards)
               Value = expected
-              Detail = sprintf "positions %A, expected after redraw" positions }
+              Detail = sprintf "%s; positions %A, expected best hand after redraw %.0f" outcome positions expected }
 
-        let others = Search.discards input |> List.filter (fun (p, _) -> p <> indices) |> List.truncate 3
-        let chosen = discardCandidate (indices, value)
+    let evaluated, rule = Search.choose input
+    let candidates = evaluated |> List.truncate 5 |> List.map candidate
 
-        let playNow = { playCandidates.Head with Detail = playCandidates.Head.Detail + ", score now" }
-        let candidates = [ chosen; playNow ] @ (others |> List.map discardCandidate)
-
-        Discard indices, decision seq g chosen.Action rule candidates None
+    match fst evaluated.Head with
+    | Search.PlayCards(indices, _, best) ->
+        Play indices, decision seq g candidates.Head.Action rule candidates (Some best.Total)
+    | Search.DiscardCards(indices, _) -> Discard indices, decision seq g candidates.Head.Action rule candidates None
 
 let decide (seq: int) (g: Api.GameState) : Action * Decision =
     match g.State with
