@@ -127,3 +127,12 @@ let ``add and set encode their parameters`` () =
     Assert.Equal("set", set.GetProperty("method").GetString())
     Assert.Equal(-5, set.GetProperty("params").GetProperty("chips").GetInt32())
     Assert.Equal(4, set.GetProperty("params").GetProperty("hands").GetInt32())
+
+[<Fact>]
+let ``wrong typed field is an error not an exception`` () =
+    let e =
+        JsonDocument.Parse("""{"state":"MENU","round_num":1,"ante_num":1,"money":"x"}""").RootElement
+
+    match decodeChecked e with
+    | Error(Transport m) -> Assert.StartsWith("decode: ", m)
+    | other -> failwithf "unexpected %A" other

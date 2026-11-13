@@ -1,5 +1,6 @@
 ﻿module Balatro.Bot.Program
 
+open System
 open Microsoft.FSharp.Reflection
 
 let private usage = "usage: run --deck <DECK> --stake <STAKE> --seed <SEED> [--url <URL>]"
@@ -39,10 +40,33 @@ let private oracle (rest: string list) =
         eprintfn "usage: oracle [--keys k1,k2,...] [--url <URL>]"
         2
 
+let private batch (rest: string list) =
+    let parsed =
+        options rest
+        |> Option.bind (fun o ->
+            match Map.tryFind "--deck" o, Map.tryFind "--stake" o, Map.tryFind "--count" o with
+            | Some d, Some s, Some c ->
+                match parseUnion<Api.Deck> d, parseUnion<Api.Stake> s, Int32.TryParse c with
+                | Some deck, Some stake, (true, count) -> Some(deck, stake, s, count, o)
+                | _ -> None
+            | _ -> None)
+
+    match parsed with
+    | Some(deck, stake, stakeName, count, o) ->
+        let prefix = Map.tryFind "--prefix" o |> Option.defaultValue "B"
+        let url = Map.tryFind "--url" o |> Option.defaultValue "http://127.0.0.1:12346"
+        let seeds = [ for i in 1..count -> sprintf "%s%04d" prefix i ]
+        Batch.run (Api.create url) deck stake seeds "runs" |> Batch.summary stakeName |> printfn "%s"
+        0
+    | None ->
+        eprintfn "usage: batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--url <URL>]"
+        2
+
 [<EntryPoint>]
 let main argv =
     match List.ofArray argv with
     | "oracle" :: rest -> oracle rest
+    | "batch" :: rest -> batch rest
     | _ ->
 
     let parsed =
@@ -68,7 +92,7 @@ let main argv =
         | Ok r ->
             printfn
                 "%s, ante %d, round %d, plays %d, exact predictions %d/%d"
-                (if r.Won then "won" else "lost")
+                (Runner.outcomeText r.Outcome)
                 r.Ante
                 r.Round
                 r.Plays

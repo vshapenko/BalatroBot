@@ -667,9 +667,15 @@ let private call client name parameters =
     | :? HttpRequestException as ex -> Error(Transport ex.Message)
     | :? TaskCanceledException as ex -> Error(Transport ex.Message)
 
+let decodeChecked (e: JsonElement) : Result<GameState, ApiError> =
+    try
+        decodeGameState e |> Result.mapError (fun m -> Transport("decode: " + m))
+    with
+    | :? InvalidOperationException as ex -> Error(Transport("decode: " + ex.Message))
+    | :? FormatException as ex -> Error(Transport("decode: " + ex.Message))
+
 let private game client name parameters =
-    call client name parameters
-    |> Result.bind (fun r -> decodeGameState r |> Result.mapError (fun m -> Transport("decode: " + m)))
+    call client name parameters |> Result.bind decodeChecked
 
 let health client : Result<unit, ApiError> =
     call client "health" [] |> Result.map ignore
