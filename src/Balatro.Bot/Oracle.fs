@@ -46,7 +46,7 @@ let private bestPlay (g: Api.GameState) (seen: Set<HandType>) =
     let pool = if fresh.IsEmpty then scored else fresh
     pool |> List.maxBy (fun (_, _, b) -> b.Total)
 
-let runKey (client: Api.Client) (key: string) : Result<Trial list, Api.ApiError> =
+let runKey (client: Api.Client) (deck: Api.Deck) (stake: Api.Stake) (key: string) : Result<Trial list, Api.ApiError> =
     let rec loop (g: Api.GameState) seen trials =
         if g.State <> Api.State.SelectingHand || List.length trials = 4 then
             Ok(List.rev trials)
@@ -67,14 +67,14 @@ let runKey (client: Api.Client) (key: string) : Result<Trial list, Api.ApiError>
 
     // A start sent while the game is in GAME_OVER fails, so go through the menu first
     Api.menu client
-    |> Result.bind (fun _ -> Api.start client Api.Deck.Red Api.Stake.White (Some "ORACLE"))
+    |> Result.bind (fun _ -> Api.start client deck stake (Some "ORACLE"))
     // Ante 8 makes the blind unreachable (negative chips are refused), so the trial never ends early
     |> Result.bind (fun _ -> Api.set client [ "ante", 8 ])
     |> Result.bind (fun _ -> Api.select client)
     |> Result.bind (fun _ -> Api.add client key)
     |> Result.bind (fun g -> loop g Set.empty [])
 
-let run (client: Api.Client) (keys: string list) (outDir: string) : Result<int * int, Api.ApiError> =
+let run (client: Api.Client) (deck: Api.Deck) (stake: Api.Stake) (keys: string list) (outDir: string) : Result<int * int, Api.ApiError> =
     Directory.CreateDirectory outDir |> ignore
     let path = Path.Combine(outDir, "oracle.jsonl")
     File.Delete path
@@ -94,7 +94,7 @@ let run (client: Api.Client) (keys: string list) (outDir: string) : Result<int *
     let results =
         keys
         |> List.collect (fun key ->
-            match runKey client key with
+            match runKey client deck stake key with
             | Ok trials -> trials |> List.map record
             | Error e ->
                 printfn "%s: ERROR %A" key e

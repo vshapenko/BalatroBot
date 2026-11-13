@@ -9,7 +9,7 @@ let private usage =
         [ "usage:"
           "  run --deck <DECK> --stake <STAKE> --seed <SEED> [--url <URL>]"
           "  batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--url <URL>]"
-          "  oracle [--keys k1,k2,...] [--url <URL>]" ]
+          "  oracle [--deck <DECK>] [--stake <STAKE>] [--keys k1,k2,...] [--url <URL>]" ]
     )
 
 let private parseUnion<'a> (s: string) =
@@ -27,8 +27,19 @@ let private options (args: string list) =
     go [] args
 
 let private oracle (rest: string list) =
-    match options rest with
-    | Some o when o.Keys |> Seq.forall (fun k -> k = "--keys" || k = "--url") ->
+    let parsed =
+        options rest
+        |> Option.filter (fun o -> o.Keys |> Seq.forall (fun k -> k = "--deck" || k = "--stake" || k = "--keys" || k = "--url"))
+        |> Option.bind (fun o ->
+            match
+                parseUnion<Api.Deck> (Map.tryFind "--deck" o |> Option.defaultValue "RED"),
+                parseUnion<Api.Stake> (Map.tryFind "--stake" o |> Option.defaultValue "WHITE")
+            with
+            | Some deck, Some stake -> Some(deck, stake, o)
+            | _ -> None)
+
+    match parsed with
+    | Some(deck, stake, o) ->
         let keys =
             match Map.tryFind "--keys" o with
             | Some k -> k.Split ',' |> List.ofArray
@@ -36,15 +47,15 @@ let private oracle (rest: string list) =
 
         let url = Map.tryFind "--url" o |> Option.defaultValue "http://127.0.0.1:12346"
 
-        match Oracle.run (Api.create url) keys "runs/oracle" with
+        match Oracle.run (Api.create url) deck stake keys "runs/oracle" with
         | Ok(exact, total) ->
             printfn "oracle: %d/%d exact, %d keys" exact total keys.Length
             0
         | Error e ->
             eprintfn "API error: %A" e
             1
-    | _ ->
-        eprintfn "usage: oracle [--keys k1,k2,...] [--url <URL>]"
+    | None ->
+        eprintfn "usage: oracle [--deck <DECK>] [--stake <STAKE>] [--keys k1,k2,...] [--url <URL>]"
         2
 
 let private batch (rest: string list) =

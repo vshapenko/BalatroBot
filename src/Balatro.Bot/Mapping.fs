@@ -137,4 +137,5 @@ let situation (state: Api.GameState) : Jokers.Situation =
             let info = state.Hands[HandType.label t]
             t, (info.Played, info.PlayedThisRound))
         |> Map.ofList
-      Boss = boss state }
+      Boss = boss state
+      Balance = (state.Deck = Some Api.Deck.Plasma) }

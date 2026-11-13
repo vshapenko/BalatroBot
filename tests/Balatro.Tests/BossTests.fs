@@ -193,3 +193,57 @@ let ``another boss keeps the wire hand values`` () =
 let ``The Flint is not mapped because the modded game does not halve`` () =
     let g = load "SELECTING_HAND" |> withBoss "The Flint"
     Assert.Equal(None, Mapping.boss g)
+
+let private plasma jokerKey played =
+    let joker = { jokerJoker with Key = jokerKey; Name = jokerKey }
+
+    scoreWith
+        { Situation.empty with
+            Jokers = [ joker ]
+            Balance = true }
+        { Played = played
+          Held = []
+          Levels = levels }
+
+[<Fact>]
+let ``Plasma Deck balances a Straight with Joker`` () =
+    let played = [ card Six Hearts; card Five Spades; card Four Clubs; card Three Spades; card Two Spades ]
+    Assert.Equal(841.0, (plasma "j_joker" played).Total)
+
+[<Fact>]
+let ``Plasma Deck balances a High Card with Joker`` () =
+    Assert.Equal(100.0, (plasma "j_joker" [ card Jack Clubs ]).Total)
+
+[<Fact>]
+let ``Plasma Deck floors an odd sum on a High Card with Stuntman`` () =
+    // 16 chips + 250 from Stuntman and 1 mult: 267 halves to 133
+    Assert.Equal(17689.0, (plasma "j_stuntman" [ card Ace Diamonds ]).Total)
+
+[<Fact>]
+let ``Plasma Deck balances a Two Pair after the x-mult of Duo`` () =
+    let played = [ card Ten Hearts; card Ten Clubs; card Nine Spades; card Nine Hearts ]
+    Assert.Equal(961.0, (plasma "j_duo" played).Total)
+
+[<Fact>]
+let ``Plasma Deck balances a Pair with Hanging Chad retriggers`` () =
+    Assert.Equal(784.0, (plasma "j_hanging_chad" [ card Ace Hearts; card Ace Diamonds ]).Total)
+
+[<Fact>]
+let ``Plasma Deck balances a Two Pair with Sly Joker`` () =
+    let played = [ card Ten Hearts; card Ten Clubs; card Nine Spades; card Nine Hearts ]
+    Assert.Equal(3025.0, (plasma "j_sly" played).Total)
+
+[<Fact>]
+let ``Plasma Deck adds a final step`` () =
+    let result = plasma "j_joker" [ card Jack Clubs ]
+    Assert.Equal({ Source = "Plasma Deck"; Chips = 10.0; Mult = 10.0 }, List.last result.Steps)
+
+[<Fact>]
+let ``the Plasma deck sets Balance and the Red deck does not`` () =
+    let red = load "SELECTING_HAND"
+    Assert.False (Mapping.situation red).Balance
+    Assert.True (Mapping.situation { red with Deck = Some Api.Deck.Plasma }).Balance
+
+[<Fact>]
+let ``without Balance the King pair still scores 60`` () =
+    Assert.Equal(60.0, (scoreWith { Situation.empty with Balance = false } { Played = kk; Held = []; Levels = levels }).Total)

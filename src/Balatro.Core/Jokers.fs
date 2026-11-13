@@ -26,7 +26,8 @@ type Situation =
       DeckCount: int
       JokerSlots: int
       HandPlays: Map<HandType, int * int>
-      Boss: Boss option }
+      Boss: Boss option
+      Balance: bool }
 
 module Situation =
     let empty =
@@ -37,7 +38,8 @@ module Situation =
           DeckCount = 0
           JokerSlots = 0
           HandPlays = Map.empty
-          Boss = None }
+          Boss = None
+          Balance = false }
 
 type Context =
     { Played: Card list

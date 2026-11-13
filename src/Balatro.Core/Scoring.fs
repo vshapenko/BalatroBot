@@ -250,7 +250,13 @@ let scoreWith (situation: Situation) (input: ScoreInput) : ScoreBreakdown =
             | _ -> level.Chips, level.Mult, [ baseStep ]
 
         let chips, mult, steps =
-            List.fold applyEntry start (playedEntries @ heldEntries @ jokerEntries)
+            let chips, mult, steps = List.fold applyEntry start (playedEntries @ heldEntries @ jokerEntries)
+
+            if situation.Balance then
+                let balanced = floor ((chips + mult) / 2.0)
+                balanced, balanced, { Source = "Plasma Deck"; Chips = balanced; Mult = balanced } :: steps
+            else
+                chips, mult, steps
 
         { HandType = handType
           ScoringCards = scoring
