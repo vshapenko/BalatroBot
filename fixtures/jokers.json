@@ -1,0 +1,1052 @@
+[
+  {
+    "key": "j_8_ball",
+    "label": "8 Ball",
+    "effect": "1 in 4 chance for each played 8 to create a Tarot card when scored (Must have room)",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_abstract",
+    "label": "Abstract Joker",
+    "effect": "+3 Mult for each Joker card (Currently +3 Mult)",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_acrobat",
+    "label": "Acrobat",
+    "effect": "X3 Mult on final hand of round",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_ancient",
+    "label": "Ancient Joker",
+    "effect": "Each played card with Diamond suit gives X1.5 Mult when scored, suit changes at end of round",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_arrowhead",
+    "label": "Arrowhead",
+    "effect": "Played cards with Spade suit give +50 Chips when scored",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_astronomer",
+    "label": "Astronomer",
+    "effect": "All Planet cards and Celestial Packs in the shop are free",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_banner",
+    "label": "Banner",
+    "effect": "+30 Chips for each remaining discard",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_baron",
+    "label": "Baron",
+    "effect": "Each King held in hand gives X1.5 Mult",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_baseball",
+    "label": "Baseball Card",
+    "effect": "Uncommon Jokers each give X1.5 Mult",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_blackboard",
+    "label": "Blackboard",
+    "effect": "X3 Mult if all cards held in hand are Spades or Clubs",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_bloodstone",
+    "label": "Bloodstone",
+    "effect": "1 in 2 chance for played cards with Heart suit to give X1.5 Mult when scored",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_blue_joker",
+    "label": "Blue Joker",
+    "effect": "+2 Chips for each remaining card in deck (Currently +88 Chips)",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_blueprint",
+    "label": "Blueprint",
+    "effect": "Copies ability of Joker to the right ",
+    "sell": 5,
+    "buy": 10
+  },
+  {
+    "key": "j_bootstraps",
+    "label": "Bootstraps",
+    "effect": "+2 Mult for every $5 you have (Currently +158 Mult)",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_brainstorm",
+    "label": "Brainstorm",
+    "effect": "Copies the ability of leftmost Joker ",
+    "sell": 5,
+    "buy": 10
+  },
+  {
+    "key": "j_bull",
+    "label": "Bull",
+    "effect": "+2 Chips for each $1 you have (Currently +462 Chips)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_burglar",
+    "label": "Burglar",
+    "effect": "When Blind is selected, gain +3 Hands and lose all discards",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_burnt",
+    "label": "Burnt Joker",
+    "effect": "Upgrade the level of the first discarded poker hand each round",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_business",
+    "label": "Business Card",
+    "effect": "Played face cards have a 1 in 2 chance to give $2 when scored",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_caino",
+    "label": "Caino",
+    "effect": "This Joker gains X1 Mult when a face card is destroyed (Currently X1 Mult)",
+    "sell": 10,
+    "buy": 20
+  },
+  {
+    "key": "j_campfire",
+    "label": "Campfire",
+    "effect": "This Joker gains X0.25 Mult for each card sold, resets when Boss Blind is defeated (Currently X1 Mult)",
+    "sell": 4,
+    "buy": 9
+  },
+  {
+    "key": "j_card_sharp",
+    "label": "Card Sharp",
+    "effect": "X3 Mult if played poker hand has already been played this round",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_cartomancer",
+    "label": "Cartomancer",
+    "effect": "Create a Tarot card when Blind is selected (Must have room)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_castle",
+    "label": "Castle",
+    "effect": "This Joker gains +3 Chips per discarded Heart card, suit changes every round (Currently +0 Chips)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_cavendish",
+    "label": "Cavendish",
+    "effect": "X3 Mult 1 in 1,000 chance this card is destroyed at end of round",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_ceremonial",
+    "label": "Ceremonial Dagger",
+    "effect": "When Blind is selected, destroy Joker to the right and permanently add double its sell value to this Mult (Currently +0 Mult)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_certificate",
+    "label": "Certificate",
+    "effect": "When round begins, add a random playing card with a random seal to your hand",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_chaos",
+    "label": "Chaos the Clown",
+    "effect": "1 free Reroll per shop",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_chicot",
+    "label": "Chicot",
+    "effect": "Disables effect of every Boss Blind",
+    "sell": 10,
+    "buy": 20
+  },
+  {
+    "key": "j_clever",
+    "label": "Clever Joker",
+    "effect": "+80 Chips if played hand contains a Two Pair",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_cloud_9",
+    "label": "Cloud 9",
+    "effect": "Earn $1 for each 9 in your full deck at end of round (Currently $4)",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_constellation",
+    "label": "Constellation",
+    "effect": "This Joker gains X0.1 Mult every time a Planet card is used (Currently X1 Mult)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_crafty",
+    "label": "Crafty Joker",
+    "effect": "+80 Chips if played hand contains a Flush",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_crazy",
+    "label": "Crazy Joker",
+    "effect": "+12 Mult if played hand contains a Straight",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_credit_card",
+    "label": "Credit Card",
+    "effect": "Go up to -$20 in debt",
+    "sell": 1,
+    "buy": 1
+  },
+  {
+    "key": "j_delayed_grat",
+    "label": "Delayed Gratification",
+    "effect": "Earn $2 per discard if no discards are used by end of the round",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_devious",
+    "label": "Devious Joker",
+    "effect": "+100 Chips if played hand contains a Straight",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_diet_cola",
+    "label": "Diet Cola",
+    "effect": "Sell this card to create a free Double Tag",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_dna",
+    "label": "DNA",
+    "effect": "If first hand of round has only 1 card, add a permanent copy to deck and draw it to hand",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_drivers_license",
+    "label": "Driver's License",
+    "effect": "X3 Mult if you have at least 16 Enhanced cards in your full deck (Currently 0)",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_droll",
+    "label": "Droll Joker",
+    "effect": "+10 Mult if played hand contains a Flush",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_drunkard",
+    "label": "Drunkard",
+    "effect": "+1 discard each round",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_duo",
+    "label": "The Duo",
+    "effect": "X2 Mult if played hand contains a Pair",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_dusk",
+    "label": "Dusk",
+    "effect": "Retrigger all played cards in final hand of round",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_egg",
+    "label": "Egg",
+    "effect": "Gains $3 of sell value at end of round",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_erosion",
+    "label": "Erosion",
+    "effect": "+4 Mult for each card below 52 in your full deck (Currently +0 Mult)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_even_steven",
+    "label": "Even Steven",
+    "effect": "Played cards with even rank give +4 Mult when scored (10, 8, 6, 4, 2)",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_faceless",
+    "label": "Faceless Joker",
+    "effect": "Earn $5 if 3 or more face cards are discarded at the same time",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_family",
+    "label": "The Family",
+    "effect": "X4 Mult if played hand contains a Four of a Kind",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_fibonacci",
+    "label": "Fibonacci",
+    "effect": "Each played Ace, 2, 3, 5, or 8 gives +8 Mult when scored",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_flash",
+    "label": "Flash Card",
+    "effect": "This Joker gains +2 Mult per reroll in the shop (Currently +0 Mult)",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_flower_pot",
+    "label": "Flower Pot",
+    "effect": "X3 Mult if poker hand contains a Diamond card, Club card, Heart card, and Spade card",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_fortune_teller",
+    "label": "Fortune Teller",
+    "effect": "+1 Mult per Tarot card used this run (Currently +0)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_four_fingers",
+    "label": "Four Fingers",
+    "effect": "All Flushes and Straights can be made with 4 cards",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_gift",
+    "label": "Gift Card",
+    "effect": "Add $1 of sell value to every Joker and Consumable card at end of round",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_glass",
+    "label": "Glass Joker",
+    "effect": "This Joker gains X0.75 Mult for every Glass Card that is destroyed (Currently X1 Mult)",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_gluttenous_joker",
+    "label": "Gluttonous Joker",
+    "effect": "Played cards with Club suit give +3 Mult when scored",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_golden",
+    "label": "Golden Joker",
+    "effect": "Earn $4 at end of round",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_greedy_joker",
+    "label": "Greedy Joker",
+    "effect": "Played cards with Diamond suit give +3 Mult when scored",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_green_joker",
+    "label": "Green Joker",
+    "effect": "+1 Mult per hand played -1 Mult per discard (Currently +0 Mult)",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_gros_michel",
+    "label": "Gros Michel",
+    "effect": "+15 Mult 1 in 6 chance this card is destroyed at end of round",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_hack",
+    "label": "Hack",
+    "effect": "Retrigger each played 2, 3, 4, or 5",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_half",
+    "label": "Half Joker",
+    "effect": "+20 Mult if played hand contains 3 or fewer cards",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_hallucination",
+    "label": "Hallucination",
+    "effect": "1 in 2 chance to create a Tarot card when any Booster Pack is opened (Must have room)",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_hanging_chad",
+    "label": "Hanging Chad",
+    "effect": "Retrigger first played card used in scoring 2 additional times",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_hiker",
+    "label": "Hiker",
+    "effect": "Every played card permanently gains +5 Chips when scored",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_hit_the_road",
+    "label": "Hit the Road",
+    "effect": "This Joker gains X0.5 Mult for every Jack discarded this round (Currently X1 Mult)",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_hologram",
+    "label": "Hologram",
+    "effect": "This Joker gains X0.25 Mult every time a playing card is added to your deck (Currently X1 Mult)",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_ice_cream",
+    "label": "Ice Cream",
+    "effect": "+100 Chips -5 Chips for every hand played",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_idol",
+    "label": "The Idol",
+    "effect": "Each played 7 of Hearts gives X2 Mult when scored Card changes every round",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_invisible",
+    "label": "Invisible Joker",
+    "effect": "After 2 rounds, sell this card to Duplicate a random Joker (Currently 0/2)",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_joker",
+    "label": "Joker",
+    "effect": "+4 Mult",
+    "sell": 1,
+    "buy": 2
+  },
+  {
+    "key": "j_jolly",
+    "label": "Jolly Joker",
+    "effect": "+8 Mult if played hand contains a Pair",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_juggler",
+    "label": "Juggler",
+    "effect": "+1 hand size",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_loyalty_card",
+    "label": "Loyalty Card",
+    "effect": "X4 Mult every 6 hands played 5 remaining",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_luchador",
+    "label": "Luchador",
+    "effect": "Sell this card to disable the current Boss Blind ",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_lucky_cat",
+    "label": "Lucky Cat",
+    "effect": "This Joker gains X0.25 Mult every time a Lucky card successfully triggers (Currently X1 Mult)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_lusty_joker",
+    "label": "Lusty Joker",
+    "effect": "Played cards with Heart suit give +3 Mult when scored",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_mad",
+    "label": "Mad Joker",
+    "effect": "+10 Mult if played hand contains a Two Pair",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_madness",
+    "label": "Madness",
+    "effect": "When Small Blind or Big Blind is selected, gain X0.5 Mult and destroy a random Joker (Currently X1 Mult)",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_mail",
+    "label": "Mail-In Rebate",
+    "effect": "Earn $5 for each discarded 6, rank changes every round",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_marble",
+    "label": "Marble Joker",
+    "effect": "Adds one Stone card to deck when Blind is selected",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_matador",
+    "label": "Matador",
+    "effect": "Earn $8 if played hand triggers the Boss Blind ability",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_merry_andy",
+    "label": "Merry Andy",
+    "effect": "+3 discards each round, -1 hand size",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_midas_mask",
+    "label": "Midas Mask",
+    "effect": "All played face cards become Gold cards when scored",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_mime",
+    "label": "Mime",
+    "effect": "Retrigger all card held in hand abilities",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_misprint",
+    "label": "Misprint",
+    "effect": "  +",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_mr_bones",
+    "label": "Mr. Bones",
+    "effect": "Prevents Death if chips scored are at least 25% of required chips ",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_mystic_summit",
+    "label": "Mystic Summit",
+    "effect": "+15 Mult when 0 discards remaining",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_obelisk",
+    "label": "Obelisk",
+    "effect": "This Joker gains X0.2 Mult per consecutive hand played without playing your most played poker hand (Currently X1 Mult)",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_odd_todd",
+    "label": "Odd Todd",
+    "effect": "Played cards with odd rank give +31 Chips when scored (A, 9, 7, 5, 3)",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_onyx_agate",
+    "label": "Onyx Agate",
+    "effect": "Played cards with Club suit give +7 Mult when scored",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_oops",
+    "label": "Oops! All 6s",
+    "effect": "Doubles all listed  (ex: 1 in 3 -> 2 in 3)",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_order",
+    "label": "The Order",
+    "effect": "X3 Mult if played hand contains a Straight",
+    "sell": 5,
+    "buy": 10
+  },
+  {
+    "key": "j_pareidolia",
+    "label": "Pareidolia",
+    "effect": "All cards are considered face cards",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_perkeo",
+    "label": "Perkeo",
+    "effect": "Creates a Negative copy of 1 random consumable card in your possession at the end of the shop",
+    "sell": 10,
+    "buy": 20
+  },
+  {
+    "key": "j_photograph",
+    "label": "Photograph",
+    "effect": "First played face card gives X2 Mult when scored",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_popcorn",
+    "label": "Popcorn",
+    "effect": "+20 Mult -4 Mult per round played",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_raised_fist",
+    "label": "Raised Fist",
+    "effect": "Adds double the rank of lowest ranked card held in hand to Mult",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_ramen",
+    "label": "Ramen",
+    "effect": "X2 Mult, loses X0.01 Mult per card discarded",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_red_card",
+    "label": "Red Card",
+    "effect": "This Joker gains +3 Mult when any Booster Pack is skipped (Currently +0 Mult)",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_reserved_parking",
+    "label": "Reserved Parking",
+    "effect": "Each face card held in hand has a 1 in 2 chance to give $1",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_ride_the_bus",
+    "label": "Ride the Bus",
+    "effect": "This Joker gains +1 Mult per consecutive hand played without a scoring face card (Currently +0 Mult)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_riff_raff",
+    "label": "Riff-raff",
+    "effect": "When Blind is selected, create 2 Common Jokers (Must have room)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_ring_master",
+    "label": "Showman",
+    "effect": "Joker, Tarot, Planet, and Spectral cards may appear multiple times",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_rocket",
+    "label": "Rocket",
+    "effect": "Earn $1 at end of round Payout increases by $2 when Boss Blind is defeated",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_rough_gem",
+    "label": "Rough Gem",
+    "effect": "Played cards with Diamond suit earn $1 when scored",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_runner",
+    "label": "Runner",
+    "effect": "Gains +15 Chips if played hand contains a Straight (Currently +0 Chips)",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_satellite",
+    "label": "Satellite",
+    "effect": "Earn $1 at end of round per unique Planet card used this run (Currently $0)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_scary_face",
+    "label": "Scary Face",
+    "effect": "Played face cards give +30 Chips when scored",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_scholar",
+    "label": "Scholar",
+    "effect": "Played Aces give +20 Chips and +4 Mult when scored",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_seance",
+    "label": "Seance",
+    "effect": "If poker hand is a Straight Flush, create a random Spectral card (Must have room)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_seeing_double",
+    "label": "Seeing Double",
+    "effect": "X2 Mult if played hand has a scoring Club card and a scoring card of any other suit",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_selzer",
+    "label": "Seltzer",
+    "effect": "Retrigger all cards played for the next 10 hands",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_shoot_the_moon",
+    "label": "Shoot the Moon",
+    "effect": "Each Queen held in hand gives +13 Mult",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_shortcut",
+    "label": "Shortcut",
+    "effect": "Allows Straights to be made with gaps of 1 rank (ex: 10 8 6 5 3)",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_sixth_sense",
+    "label": "Sixth Sense",
+    "effect": "If first hand of round is a single 6, destroy it and create a Spectral card (Must have room)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_sly",
+    "label": "Sly Joker",
+    "effect": "+50 Chips if played hand contains a Pair",
+    "sell": 1,
+    "buy": 3
+  },
+  {
+    "key": "j_smeared",
+    "label": "Smeared Joker",
+    "effect": "Hearts and Diamonds count as the same suit, Spades and Clubs count as the same suit",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_smiley",
+    "label": "Smiley Face",
+    "effect": "Played face cards give +5 Mult when scored",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_sock_and_buskin",
+    "label": "Sock and Buskin",
+    "effect": "Retrigger all played face cards",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_space",
+    "label": "Space Joker",
+    "effect": "1 in 4 chance to upgrade level of played poker hand",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_splash",
+    "label": "Splash",
+    "effect": "Every played card counts in scoring",
+    "sell": 1,
+    "buy": 3
+  },
+  {
+    "key": "j_square",
+    "label": "Square Joker",
+    "effect": "This Joker gains +4 Chips if played hand has exactly 4 cards (Currently 0 Chips)",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_steel_joker",
+    "label": "Steel Joker",
+    "effect": "Gives X0.2 Mult for each Steel Card in your full deck (Currently X1 Mult)",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_stencil",
+    "label": "Joker Stencil",
+    "effect": "X1 Mult for each empty Joker slot Joker Stencil included (Currently X5)",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_stone",
+    "label": "Stone Joker",
+    "effect": "Gives +25 Chips for each Stone Card in your full deck (Currently +0 Chips)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_stuntman",
+    "label": "Stuntman",
+    "effect": "+250 Chips, -2 hand size",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_supernova",
+    "label": "Supernova",
+    "effect": "Adds the number of times poker hand has been played this run to Mult",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_superposition",
+    "label": "Superposition",
+    "effect": "Create a Tarot card if poker hand contains an Ace and a Straight (Must have room)",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_swashbuckler",
+    "label": "Swashbuckler",
+    "effect": "Adds the sell value of all other owned Jokers to Mult (Currently +0 Mult)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_throwback",
+    "label": "Throwback",
+    "effect": "X0.25 Mult for each Blind skipped this run (Currently X1 Mult)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_ticket",
+    "label": "Golden Ticket",
+    "effect": "Played Gold cards earn $4 when scored",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_to_the_moon",
+    "label": "To the Moon",
+    "effect": "Earn an extra $1 of interest for every $5 you have at end of round",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_todo_list",
+    "label": "To Do List",
+    "effect": "Earn $4 if poker hand is a Straight Flush, poker hand changes at end of round",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_trading",
+    "label": "Trading Card",
+    "effect": "If first discard of round has only 1 card, destroy it and earn $3",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_tribe",
+    "label": "The Tribe",
+    "effect": "X2 Mult if played hand contains a Flush",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_triboulet",
+    "label": "Triboulet",
+    "effect": "Played Kings and Queens each give X2 Mult when scored",
+    "sell": 10,
+    "buy": 20
+  },
+  {
+    "key": "j_trio",
+    "label": "The Trio",
+    "effect": "X3 Mult if played hand contains a Three of a Kind",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_troubadour",
+    "label": "Troubadour",
+    "effect": "+2 hand size, -1 hand each round",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_trousers",
+    "label": "Spare Trousers",
+    "effect": "This Joker gains +2 Mult if played hand contains a Two Pair (Currently +0 Mult)",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_turtle_bean",
+    "label": "Turtle Bean",
+    "effect": "+5 hand size, reduces by 1 every round",
+    "sell": 3,
+    "buy": 6
+  },
+  {
+    "key": "j_vagabond",
+    "label": "Vagabond",
+    "effect": "Create a Tarot card if hand is played with $4 or less",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_vampire",
+    "label": "Vampire",
+    "effect": "This Joker gains X0.1 Mult per scoring Enhanced card played, removes card Enhancement (Currently X1 Mult)",
+    "sell": 3,
+    "buy": 7
+  },
+  {
+    "key": "j_walkie_talkie",
+    "label": "Walkie Talkie",
+    "effect": "Each played 10 or 4 gives +10 Chips and +4 Mult when scored",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_wee",
+    "label": "Wee Joker",
+    "effect": "This Joker gains +8 Chips when each played 2 is scored (Currently +0 Chips)",
+    "sell": 4,
+    "buy": 8
+  },
+  {
+    "key": "j_wily",
+    "label": "Wily Joker",
+    "effect": "+100 Chips if played hand contains a Three of a Kind",
+    "sell": 2,
+    "buy": 4
+  },
+  {
+    "key": "j_wrathful_joker",
+    "label": "Wrathful Joker",
+    "effect": "Played cards with Spade suit give +3 Mult when scored",
+    "sell": 2,
+    "buy": 5
+  },
+  {
+    "key": "j_yorick",
+    "label": "Yorick",
+    "effect": "This Joker gains X1 Mult every 23 [23] cards discarded (Currently X1 Mult)",
+    "sell": 10,
+    "buy": 20
+  },
+  {
+    "key": "j_zany",
+    "label": "Zany Joker",
+    "effect": "+12 Mult if played hand contains a Three of a Kind",
+    "sell": 2,
+    "buy": 4
+  }
+]
