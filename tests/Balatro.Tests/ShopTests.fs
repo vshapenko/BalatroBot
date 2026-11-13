@@ -244,3 +244,151 @@ let ``policy passes the shop with full joker slots and says so`` () =
     | Policy.NextRound, decision -> Assert.Equal("joker slots are full", decision.Rule)
     | Policy.ReorderJokers _, _ -> ()
     | other, _ -> failwithf "unexpected %A" other
+
+let private upgrade gain : Upgrade =
+    { Sell = 0
+      Offer = JokerOffer(0, joker "j_duo", 8)
+      Before = 100.0
+      After = 100.0 * gain
+      Net = 6
+      Threshold = 1.05 }
+
+let private load name =
+    let text = File.ReadAllText(AppContext.BaseDirectory + "fixtures/gamestate." + name + ".json")
+
+    match Api.decodeGameState (JsonDocument.Parse(text).RootElement) with
+    | Ok g -> g
+    | Error e -> failwith e
+
+let private tarotShop (g: Api.GameState) money =
+    { g with
+        Money = money
+        Shop = { g.Shop with Cards = [ g.Shop.Cards[0] ] } }
+
+let private withoutPacks (g: Api.GameState) =
+    { g with Packs = { g.Packs with Count = 0; Cards = [] } }
+
+[<Fact>]
+let ``upgrades need full joker slots and a net cost within the money`` () =
+    let owned = { joker "j_joker" with SellValue = 2 }
+    let offers = [ JokerOffer(0, joker "j_duo", 8) ]
+    Assert.Empty(upgrades 100 2 10 (build (List.replicate 4 owned)) offers)
+
+    let full = build (List.replicate 5 owned)
+    let found = upgrades 100 2 10 full offers
+    Assert.Equal(5, found.Length)
+    Assert.All(found, fun u -> Assert.Equal(6, u.Net))
+    Assert.Empty(upgrades 100 2 5 full offers)
+
+[<Fact>]
+let ``choose upgrade needs a gain of 15 percent`` () =
+    Assert.Equal(Some(upgrade 1.20), chooseUpgrade [ upgrade 1.20 ])
+    Assert.Equal(None, chooseUpgrade [ upgrade 1.10 ])
+    Assert.Equal(None, chooseUpgrade [])
+
+[<Fact>]
+let ``choose upgrade also needs the gain to clear the buy threshold after the sale`` () =
+    let dear gain = { upgrade gain with Threshold = 1.20 }
+    Assert.Equal(None, chooseUpgrade [ dear 1.19 ])
+    Assert.Equal(Some(dear 1.21), chooseUpgrade [ dear 1.21 ])
+
+[<Fact>]
+let ``an upgrade carries the buy threshold of the money held after the sale`` () =
+    let owned = List.replicate 4 (joker "j_joker") @ [ { joker "j_joker" with SellValue = 3 } ]
+    let found = upgrades 100 2 12 (build owned) [ JokerOffer(0, joker "j_duo", 11) ]
+    Assert.Equal(1.20, (found |> List.find (fun u -> u.Sell = 4)).Threshold, 9)
+
+[<Fact>]
+let ``a negative joker is never sold for an upgrade`` () =
+    let negative = { joker "j_joker" with Edition = Some Negative; SellValue = 2 }
+    let six = withSituation (fun s -> { s with JokerSlots = 6 }) (build (List.replicate 5 { joker "j_joker" with SellValue = 2 } @ [ negative ]))
+    let found = upgrades 100 2 10 six [ JokerOffer(0, joker "j_duo", 8) ]
+    Assert.Equal(5, found.Length)
+    Assert.DoesNotContain(found, fun u -> u.Sell = 5)
+
+[<Fact>]
+let ``pick from pack takes the planet that raises the score most`` () =
+    let ranks = [ Two; Three; Four; Five; Six; Seven; Eight; Nine; Ten; Jack; Queen; King; Ace ]
+    let flushes = { build [] with Deck = [ for rank in ranks -> card rank Spades ] }
+    let pack = [ PlanetOffer(0, Pair, "Mercury", 0); PlanetOffer(1, Flush, "Jupiter", 0) ]
+    Assert.Equal(1, position (pickFromPack 100 4 flushes pack).Value.Offer)
+
+[<Fact>]
+let ``pick from pack skips a joker with full slots and cards that change nothing`` () =
+    let full = build (List.replicate 5 (joker "j_joker"))
+    Assert.Equal(None, pickFromPack 100 2 full [ JokerOffer(0, joker "j_duo", 0) ])
+
+    let repeating = { build [] with Deck = aces }
+    Assert.Equal(None, pickFromPack 100 2 repeating [ PlanetOffer(0, Pair, "Mercury", 0) ])
+
+[<Fact>]
+let ``the shop seed is fixed within a visit and differs between rounds`` () =
+    let g = load "SHOP"
+    Assert.Equal(10100, Policy.shopSeed g)
+    Assert.NotEqual(Policy.shopSeed g, Policy.shopSeed { g with RoundNum = 2 })
+    Assert.NotEqual(Policy.shopSeed g, Policy.shopSeed { g with AnteNum = 2 })
+
+    let rule seq = (snd (Policy.decide seq (tarotShop g 40))).Rule
+    Assert.Equal(rule 1, rule 77)
+
+[<Fact>]
+let ``policy buys the cheapest pack that keeps the interest`` () =
+    let g = load "SHOP"
+    let action, decision = Policy.decide 1 (tarotShop g 40)
+    Assert.Equal(Policy.BuyPack 0, action)
+    Assert.Equal("buy Buffoon Pack for $4", decision.Chosen)
+
+    Assert.Equal(Policy.NextRound, fst (Policy.decide 1 (tarotShop g 28)))
+
+[<Fact>]
+let ``policy rerolls only above the interest cap and at a low price`` () =
+    let g = load "SHOP"
+    let action, decision = Policy.decide 1 (tarotShop (withoutPacks g) 31)
+    Assert.Equal(Policy.Reroll, action)
+    Assert.Contains("$26", decision.Rule)
+
+    let dear = tarotShop (withoutPacks g) 40
+    Assert.Equal(Policy.NextRound, fst (Policy.decide 1 { dear with Round = { dear.Round with RerollCost = 8 } }))
+
+[<Fact>]
+let ``policy picks from an opened pack and names both round scores`` () =
+    match Policy.decide 1 (load "SMODS_BOOSTER_OPENED") with
+    | Policy.PickPack index, decision ->
+        Assert.InRange(index, 0, 1)
+        Assert.Matches(@"from \d+ to \d+", decision.Rule)
+    | Policy.SkipPack, _ -> ()
+    | other, _ -> failwithf "unexpected %A" other
+
+[<Fact>]
+let ``policy never sells an eternal joker for an upgrade`` () =
+    let g = load "SHOP"
+    let plain = { g.Shop.Cards[1] with Set = Api.CardSet.Joker; Key = "j_joker"; Label = "Joker" }
+    let idle = { plain with Key = "j_credit_card"; Label = "Credit Card" }
+    let duo = { plain with Key = "j_duo"; Label = "Duo"; Cost = { plain.Cost with Buy = 5 } }
+
+    let state (weakest: Api.Card) =
+        { g with
+            Money = 30
+            Jokers = { g.Jokers with Count = 5; Cards = weakest :: [ for i in 1..4 -> { plain with Id = 100 + i } ] }
+            Shop = { g.Shop with Cards = [ duo ] } }
+
+    Assert.Equal(Policy.SellJoker 0, fst (Policy.decide 1 (state idle)))
+
+    let eternal = { idle with Modifier = { idle.Modifier with Eternal = true } }
+    Assert.NotEqual(Policy.SellJoker 0, fst (Policy.decide 1 (state eternal)))
+
+[<Fact>]
+let ``policy falls back to a celestial pack when no buffoon pack is affordable`` () =
+    let g = load "SHOP"
+    let celestialOnly = { g with Packs = { g.Packs with Count = 1; Cards = [ g.Packs.Cards[1] ] } }
+    let action, decision = Policy.decide 1 (tarotShop celestialOnly 40)
+    Assert.Equal(Policy.BuyPack 0, action)
+    Assert.Equal("buy Jumbo Celestial Pack for $6", decision.Chosen)
+
+[<Fact>]
+let ``policy skips a pack whose first card is a spectral card`` () =
+    let g = load "SMODS_BOOSTER_OPENED"
+    let spectral = { g.Pack.Cards[0] with Set = Api.CardSet.Spectral }
+    let action, decision = Policy.decide 1 { g with Pack = { g.Pack with Cards = spectral :: g.Pack.Cards.Tail } }
+    Assert.Equal(Policy.SkipPack, action)
+    Assert.Contains("cannot handle safely", decision.Rule)

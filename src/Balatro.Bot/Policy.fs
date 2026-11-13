@@ -14,6 +14,10 @@ type Action =
     | UsePlanet of int
     | ReorderJokers of int list
     | SkipPack
+    | SellJoker of int
+    | Reroll
+    | BuyPack of int
+    | PickPack of int
     | Stop
 
 let private symbol (card: Card) =
@@ -123,21 +127,34 @@ let private offerName offer =
     | Shop.JokerOffer(_, joker, _) -> joker.Name
     | Shop.PlanetOffer(_, _, name, _) -> name
 
+let shopSeed (g: Api.GameState) = (g.AnteNum * 100 + g.RoundNum) * 100
+
+let private shopBuild (g: Api.GameState) : Shop.Build =
+    let situation = Mapping.situation g
+
+    { Jokers = situation.Jokers
+      Levels = Mapping.levels g
+      Deck = g.Cards.Cards |> List.choose Mapping.toCard
+      HandSize = g.Hand.Limit
+      Hands = g.Round.HandsLeft
+      Situation = situation }
+
+let private interestFloor = 25
+
+let private cheapestPack (g: Api.GameState) (prefix: string) =
+    g.Packs.Cards
+    |> List.indexed
+    |> List.filter (fun (_, c) -> c.Key.StartsWith prefix && g.Money - c.Cost.Buy >= interestFloor)
+    |> List.sortBy (fun (i, c) -> c.Cost.Buy, i)
+    |> List.tryHead
+
 let private shopAction seq (g: Api.GameState) =
     match g.Consumables.Cards |> List.tryFindIndex (fun c -> c.Set = Api.CardSet.Planet) with
     | Some index ->
         let name = g.Consumables.Cards[index].Label
         UsePlanet index, decision seq g ("use " + name) "use the planet bought in the shop" [] None
     | None ->
-        let situation = Mapping.situation g
-
-        let build: Shop.Build =
-            { Jokers = situation.Jokers
-              Levels = Mapping.levels g
-              Deck = g.Cards.Cards |> List.choose Mapping.toCard
-              HandSize = g.Hand.Limit
-              Hands = g.Round.HandsLeft
-              Situation = situation }
+        let build = shopBuild g
 
         let offers =
             g.Shop.Cards
@@ -149,7 +166,7 @@ let private shopAction seq (g: Api.GameState) =
                     planetHand c.Key |> Option.map (fun hand -> Shop.PlanetOffer(i, hand, c.Label, c.Cost.Buy))
                 | _ -> None)
 
-        let seed = seq * 100
+        let seed = shopSeed g
         let evaluated = Shop.evaluate seed 20 g.Money build offers
         let percent (e: Shop.Evaluated) = (e.After / e.Before - 1.0) * 100.0
 
@@ -184,29 +201,148 @@ let private shopAction seq (g: Api.GameState) =
 
             BuyCard(Shop.position e.Offer), decision seq g candidates.Head.Action rule candidates None
         | None ->
-            let order = Shop.bestOrder seed 8 build
+            let upgrades =
+                Shop.upgrades seed 20 g.Money build offers
+                |> List.filter (fun u -> not g.Jokers.Cards[u.Sell].Modifier.Eternal)
 
-            if order <> [ 0 .. build.Jokers.Length - 1 ] then
-                let names = order |> List.map (fun i -> build.Jokers[i].Name) |> String.concat ", "
-                let score order = Shop.roundScore seed 8 { build with Jokers = order |> List.map (fun i -> build.Jokers[i]) }
 
-                ReorderJokers order,
-                decision
-                    seq
-                    g
-                    (sprintf "reorder jokers to [%s]" names)
-                    (sprintf
-                        "reordering raises the simulated round score from %.0f to %.0f"
-                        (score [ 0 .. build.Jokers.Length - 1 ])
-                        (score order))
-                    []
-                    None
-            elif evaluated.IsEmpty then
-                let slotsFull = offers |> List.exists (function Shop.JokerOffer(_, _, cost) -> cost <= g.Money | _ -> false)
-                let rule = if slotsFull then "joker slots are full" else "nothing affordable in the shop"
-                passive seq g NextRound "next round" rule
+            match Shop.chooseUpgrade upgrades with
+            | Some u ->
+                let sold = build.Jokers[u.Sell]
+                let bought = offerName u.Offer
+
+                let candidate (u: Shop.Upgrade) : Candidate =
+                    { Action = sprintf "sell %s, buy %s" build.Jokers[u.Sell].Name (offerName u.Offer)
+                      Value = u.After
+                      Detail =
+                        sprintf
+                            "round score %.0f -> %.0f (%+.0f%%), net cost $%d"
+                            u.Before
+                            u.After
+                            ((u.After / u.Before - 1.0) * 100.0)
+                            u.Net }
+
+                let rule =
+                    sprintf
+                        "joker slots are full; selling %s to buy %s raises the simulated round score from %.0f to %.0f (+%.0f%%) for a net cost of $%d; threshold +15%%"
+                        sold.Name
+                        bought
+                        u.Before
+                        u.After
+                        ((u.After / u.Before - 1.0) * 100.0)
+                        u.Net
+
+                let candidates = upgrades |> List.truncate 5 |> List.map candidate
+                SellJoker u.Sell, decision seq g (sprintf "sell %s to buy %s" sold.Name bought) rule candidates None
+            | None ->
+                let order = Shop.bestOrder seed 8 build
+
+                if order <> [ 0 .. build.Jokers.Length - 1 ] then
+                    let names = order |> List.map (fun i -> build.Jokers[i].Name) |> String.concat ", "
+                    let score order = Shop.roundScore seed 8 { build with Jokers = order |> List.map (fun i -> build.Jokers[i]) }
+
+                    ReorderJokers order,
+                    decision
+                        seq
+                        g
+                        (sprintf "reorder jokers to [%s]" names)
+                        (sprintf
+                            "reordering raises the simulated round score from %.0f to %.0f"
+                            (score [ 0 .. build.Jokers.Length - 1 ])
+                            (score order))
+                        []
+                        None
+                else
+                    let slotFree = build.Jokers.Length < build.Situation.JokerSlots
+                    let celestial = cheapestPack g "p_celestial"
+
+                    match (if slotFree then cheapestPack g "p_buffoon" |> Option.orElse celestial else celestial) with
+                    | Some(index, pack) ->
+                        let kind =
+                            if not slotFree then "the joker slots are full"
+                            elif pack.Key.StartsWith "p_buffoon" then "a joker slot is free"
+                            else "a joker slot is free but no Buffoon pack is affordable"
+
+                        BuyPack index,
+                        decision
+                            seq
+                            g
+                            (sprintf "buy %s for $%d" pack.Label pack.Cost.Buy)
+                            (sprintf
+                                "%s; $%d left after the $%d pack stays at or above the $%d interest cap"
+                                kind
+                                (g.Money - pack.Cost.Buy)
+                                pack.Cost.Buy
+                                interestFloor)
+                            []
+                            None
+                    | None when g.Money - g.Round.RerollCost >= interestFloor && g.Round.RerollCost <= 7 ->
+                        Reroll,
+                        decision
+                            seq
+                            g
+                            (sprintf "reroll the shop for $%d" g.Round.RerollCost)
+                            (sprintf
+                                "$%d left after the $%d reroll stays at or above the $%d interest cap, and the reroll costs at most $7"
+                                (g.Money - g.Round.RerollCost)
+                                g.Round.RerollCost
+                                interestFloor)
+                            []
+                            None
+                    | None ->
+                        let rule =
+                            if evaluated.IsEmpty then
+                                let slotsFull = offers |> List.exists (function Shop.JokerOffer(_, _, cost) -> cost <= g.Money | _ -> false)
+                                if slotsFull then "joker slots are full" else "nothing affordable in the shop"
+                            else
+                                "nothing in the shop raises the simulated round score enough"
+
+                        passive seq g NextRound "next round" rule
+
+let private packAction seq (g: Api.GameState) =
+    let build = shopBuild g
+
+    let cards =
+        g.Pack.Cards
+        |> List.indexed
+        |> List.choose (fun (i, c) ->
+            match c.Set with
+            | Api.CardSet.Joker -> Some(Shop.JokerOffer(i, Mapping.joker c, 0))
+            | Api.CardSet.Planet -> planetHand c.Key |> Option.map (fun hand -> Shop.PlanetOffer(i, hand, c.Label, 0))
+            | _ -> None)
+
+    // the mod never answers a pack call when the first card of the pack is a Spectral card
+    let unsafeFirst =
+        match g.Pack.Cards with
+        | first :: _ -> first.Set <> Api.CardSet.Joker && first.Set <> Api.CardSet.Planet
+        | [] -> false
+
+    match (if unsafeFirst then None else Shop.pickFromPack (shopSeed g) 20 build cards) with
+    | Some e ->
+        let name = offerName e.Offer
+
+        PickPack(Shop.position e.Offer),
+        decision
+            seq
+            g
+            (sprintf "pick %s" name)
+            (sprintf
+                "raises the simulated round score from %.0f to %.0f (+%.0f%%)"
+                e.Before
+                e.After
+                ((e.After / e.Before - 1.0) * 100.0))
+            []
+            None
+    | None ->
+        let rule =
+            if unsafeFirst then
+                "the first card of the pack is one this version cannot handle safely"
+            elif cards.IsEmpty then
+                "the pack holds cards this version does not evaluate"
             else
-                passive seq g NextRound "next round" "nothing in the shop raises the simulated round score enough"
+                "nothing in the pack raises the simulated round score"
+
+        passive seq g SkipPack "skip pack" rule
 
 let decide (seq: int) (g: Api.GameState) : Action * Decision =
     match g.State with
@@ -224,6 +360,6 @@ let decide (seq: int) (g: Api.GameState) : Action * Decision =
         passive seq g SelectBlind chosen "skeleton policy only selects the blind in this phase"
     | Api.State.RoundEval -> passive seq g CashOut "cash out" "skeleton policy only cashes out in this phase"
     | Api.State.Shop -> shopAction seq g
-    | Api.State.SmodsBoosterOpened -> passive seq g SkipPack "skip pack" "skeleton policy skips every pack"
+    | Api.State.SmodsBoosterOpened -> packAction seq g
     | Api.State.GameOver -> passive seq g Stop "stop" "game is over"
     | other -> passive seq g Stop "stop" (sprintf "unexpected state %A, skeleton policy stops" other)

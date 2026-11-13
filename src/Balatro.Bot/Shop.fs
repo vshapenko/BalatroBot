@@ -178,3 +178,51 @@ let bestOrder (seed: int) (samples: int) (build: Build) : int list =
         let currentScore = scored |> Array.find (fun (order, _) -> order = current) |> snd
 
         if snd best >= 1.02 * currentScore then fst best else current
+
+type Upgrade =
+    { Sell: int
+      Offer: Offer
+      Before: float
+      After: float
+      Net: int
+      Threshold: float }
+
+let upgrades (seed: int) (samples: int) (money: int) (build: Build) (offers: Offer list) : Upgrade list =
+    if build.Jokers.Length < build.Situation.JokerSlots then
+        []
+    else
+        let current = revalue build
+        let before = roundScore seed samples current
+
+        [ for offer in offers do
+              match offer with
+              | JokerOffer(_, _, price) ->
+                  for sell, owned in List.indexed build.Jokers do
+                      let net = price - owned.SellValue
+
+                      // a Negative joker is never sold: its slot would go with it and leave no room for the purchase
+                      if net <= money && owned.Edition <> Some Negative then
+                          let held = money + owned.SellValue
+
+                          let sold =
+                              { current with
+                                  Jokers = List.removeAt sell current.Jokers
+                                  Situation = { current.Situation with Money = current.Situation.Money + owned.SellValue } }
+
+                          yield
+                              { Sell = sell
+                                Offer = offer
+                                Before = before
+                                After = roundScore seed samples (apply sold offer)
+                                Net = net
+                                Threshold = 1.05 + 0.05 * float (interest held - interest (held - price)) }
+              | PlanetOffer _ -> () ]
+        |> List.sortBy (fun u -> -(u.After / u.Before), u.Net, u.Sell)
+
+let chooseUpgrade (upgrades: Upgrade list) : Upgrade option =
+    upgrades |> List.tryFind (fun u -> u.After / u.Before >= max 1.15 u.Threshold)
+
+let pickFromPack (seed: int) (samples: int) (build: Build) (cards: Offer list) : Evaluated option =
+    evaluate seed samples 0 build cards
+    |> List.tryHead
+    |> Option.filter (fun e -> e.After > e.Before)

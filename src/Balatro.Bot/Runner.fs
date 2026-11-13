@@ -19,7 +19,10 @@ type RunResult =
       Discards: int
       ExactPredictions: int
       Mismatches: int
-      Purchases: int }
+      Purchases: int
+      Sales: int
+      Rerolls: int
+      Packs: int }
 
 let winAnte = 8
 
@@ -106,7 +109,7 @@ let runOne
         File.AppendAllLines(Path.Combine(outDir, "trace.txt"), [ text ])
         printfn "%s" text
 
-    let finish outcome (g: Api.GameState) plays discards exact purchases =
+    let finish outcome (g: Api.GameState) plays discards exact purchases sales rerolls packs =
         emit (JsonSerializer.Serialize {| kind = "result"; outcome = outcomeText outcome |}) ("outcome: " + outcomeText outcome)
 
         Ok
@@ -118,25 +121,28 @@ let runOne
               Discards = discards
               ExactPredictions = exact
               Mismatches = plays - exact
-              Purchases = purchases }
+              Purchases = purchases
+              Sales = sales
+              Rerolls = rerolls
+              Packs = packs }
 
-    let rec loop startWon seq (g: Api.GameState) plays discards exact purchases =
+    let rec loop startWon seq (g: Api.GameState) plays discards exact purchases sales rerolls packs =
         if isWon startWon g then
-            finish Won g plays discards exact purchases
+            finish Won g plays discards exact purchases sales rerolls packs
         elif g.State = Api.State.GameOver then
-            finish Lost g plays discards exact purchases
+            finish Lost g plays discards exact purchases sales rerolls packs
         elif seq > maxDecisions then
-            finish (Aborted(sprintf "%d decisions made" maxDecisions)) g plays discards exact purchases
+            finish (Aborted(sprintf "%d decisions made" maxDecisions)) g plays discards exact purchases sales rerolls packs
         else
             try
                 let action, decision = Policy.decide seq g
                 emit (Decision.toJson decision) (Decision.toText decision)
 
                 let next apiCall =
-                    apiCall |> Result.bind (fun s -> loop startWon (seq + 1) s plays discards exact purchases)
+                    apiCall |> Result.bind (fun s -> loop startWon (seq + 1) s plays discards exact purchases sales rerolls packs)
 
                 match action with
-                | Policy.Stop -> finish (Aborted decision.Rule) g plays discards exact purchases
+                | Policy.Stop -> finish (Aborted decision.Rule) g plays discards exact purchases sales rerolls packs
                 | Policy.Play cards ->
                     Api.play client cards
                     |> Result.bind (fun after ->
@@ -153,23 +159,37 @@ let runOne
                             emit json text
 
                         let hit = if outcome.Predicted = outcome.Actual then 1 else 0
-                        loop startWon (seq + 1) after (plays + 1) discards (exact + hit) purchases)
+                        loop startWon (seq + 1) after (plays + 1) discards (exact + hit) purchases sales rerolls packs)
                 | Policy.Discard cards ->
                     Api.discard client cards
-                    |> Result.bind (fun after -> loop startWon (seq + 1) after plays (discards + 1) exact purchases)
+                    |> Result.bind (fun after -> loop startWon (seq + 1) after plays (discards + 1) exact purchases sales rerolls packs)
                 | Policy.SelectBlind -> next (Api.select client)
                 | Policy.CashOut -> next (Api.cashOut client)
                 | Policy.NextRound -> next (Api.nextRound client)
                 | Policy.BuyCard index ->
                     Api.buy client (Api.BuyCard index)
-                    |> Result.bind (fun after -> loop startWon (seq + 1) after plays discards exact (purchases + 1))
+                    |> Result.bind (fun after ->
+                        loop startWon (seq + 1) after plays discards exact (purchases + 1) sales rerolls packs)
+                | Policy.SellJoker index ->
+                    Api.sell client (Api.SellJoker index)
+                    |> Result.bind (fun after ->
+                        loop startWon (seq + 1) after plays discards exact purchases (sales + 1) rerolls packs)
+                | Policy.Reroll ->
+                    Api.reroll client
+                    |> Result.bind (fun after ->
+                        loop startWon (seq + 1) after plays discards exact purchases sales (rerolls + 1) packs)
+                | Policy.BuyPack index ->
+                    Api.buy client (Api.BuyPack index)
+                    |> Result.bind (fun after ->
+                        loop startWon (seq + 1) after plays discards exact purchases sales rerolls (packs + 1))
+                | Policy.PickPack index -> next (Api.pack client (Api.PickCard(index, [])))
                 | Policy.UsePlanet index -> next (Api.useConsumable client index [])
                 | Policy.ReorderJokers order -> next (Api.rearrange client (Api.RearrangeJokers order))
                 | Policy.SkipPack -> next (Api.pack client Api.SkipPack)
             with ex ->
-                finish (Aborted(oneLine (ex.GetType().Name + ": " + ex.Message))) g plays discards exact purchases
+                finish (Aborted(oneLine (ex.GetType().Name + ": " + ex.Message))) g plays discards exact purchases sales rerolls packs
 
     // A start sent while the game is in GAME_OVER fails, so go through the menu first
     Api.menu client
     |> Result.bind (fun _ -> Api.start client deck stake (Some seed))
-    |> Result.bind (fun g -> loop g.Won 1 g 0 0 0 0)
+    |> Result.bind (fun g -> loop g.Won 1 g 0 0 0 0 0 0 0)
