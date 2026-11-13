@@ -184,15 +184,27 @@ let private shopAction seq (g: Api.GameState) =
 
             BuyCard(Shop.position e.Offer), decision seq g candidates.Head.Action rule candidates None
         | None ->
-            let order = Shop.bestOrder seed 20 build
+            let order = Shop.bestOrder seed 8 build
 
             if order <> [ 0 .. build.Jokers.Length - 1 ] then
                 let names = order |> List.map (fun i -> build.Jokers[i].Name) |> String.concat ", "
+                let score order = Shop.roundScore seed 8 { build with Jokers = order |> List.map (fun i -> build.Jokers[i]) }
 
                 ReorderJokers order,
-                decision seq g (sprintf "reorder jokers to [%s]" names) "joker order with the highest simulated round score" [] None
+                decision
+                    seq
+                    g
+                    (sprintf "reorder jokers to [%s]" names)
+                    (sprintf
+                        "reordering raises the simulated round score from %.0f to %.0f"
+                        (score [ 0 .. build.Jokers.Length - 1 ])
+                        (score order))
+                    []
+                    None
             elif evaluated.IsEmpty then
-                passive seq g NextRound "next round" "nothing affordable in the shop"
+                let slotsFull = offers |> List.exists (function Shop.JokerOffer(_, _, cost) -> cost <= g.Money | _ -> false)
+                let rule = if slotsFull then "joker slots are full" else "nothing affordable in the shop"
+                passive seq g NextRound "next round" rule
             else
                 passive seq g NextRound "next round" "nothing in the shop raises the simulated round score enough"
 

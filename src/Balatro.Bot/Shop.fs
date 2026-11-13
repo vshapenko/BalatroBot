@@ -23,12 +23,13 @@ type Evaluated =
       InterestLost: int }
 
 let private simulate (build: Build) (shuffle: Card[]) : float =
-    let score handsLeftAfter discardsLeft played held =
+    let score plays handsLeftAfter discardsLeft played held =
         Scoring.scoreWith
             { build.Situation with
                 Jokers = build.Jokers
                 HandsLeft = handsLeftAfter
-                DiscardsLeft = discardsLeft }
+                DiscardsLeft = discardsLeft
+                HandPlays = plays }
             { Played = played
               Held = held
               Levels = build.Levels }
@@ -37,7 +38,7 @@ let private simulate (build: Build) (shuffle: Card[]) : float =
         let count = min (build.HandSize - kept.Length) (shuffle.Length - taken)
         kept @ List.ofArray shuffle[taken .. taken + count - 1], taken + count
 
-    let rec play (hand: Card list) taken handsLeft total =
+    let rec play (hand: Card list) taken handsLeft plays total =
         if handsLeft = 0 then
             total
         else
@@ -46,9 +47,9 @@ let private simulate (build: Build) (shuffle: Card[]) : float =
                   Deck = []
                   HandsLeft = handsLeft
                   HandSize = build.HandSize
-                  DiscardsLeft = build.Situation.DiscardsLeft
+                  DiscardsLeft = 0
                   Needed = 0.0
-                  Score = score
+                  Score = score plays
                   Seed = 0
                   RedrawSamples = 0
                   Rollouts = 0 }
@@ -62,10 +63,12 @@ let private simulate (build: Build) (shuffle: Card[]) : float =
                 |> List.map snd
 
             let next, taken = draw kept taken
-            play next taken (handsLeft - 1) (total + best.Total)
+            let run, round = plays |> Map.tryFind best.HandType |> Option.defaultValue (0, 0)
+            play next taken (handsLeft - 1) (Map.add best.HandType (run + 1, round + 1) plays) (total + best.Total)
 
     let hand, taken = draw [] 0
-    play hand taken build.Hands 0.0
+    let plays = build.Situation.HandPlays |> Map.map (fun _ (run, _) -> run, 0)
+    play hand taken build.Hands plays 0.0
 
 let roundScore (seed: int) (samples: int) (build: Build) : float =
     Array.init samples (fun s ->
@@ -86,24 +89,54 @@ let position offer =
     | JokerOffer(position, _, _)
     | PlanetOffer(position, _, _, _) -> position
 
-let private apply (build: Build) offer =
-    match offer with
-    | JokerOffer(_, joker, _) -> { build with Jokers = build.Jokers @ [ joker ] }
-    | PlanetOffer(_, hand, _, _) ->
-        let one = handLevel hand 1
-        let two = handLevel hand 2
-        let level = build.Levels[hand]
+let revalue (build: Build) : Build =
+    let jokers = build.Jokers
+    let money = build.Situation.Money
+    let sell = jokers |> List.sumBy (fun joker -> joker.SellValue)
+    let stencils = jokers |> List.filter (fun joker -> joker.Key = "j_stencil") |> List.length
+    let empty = build.Situation.JokerSlots - jokers.Length
 
-        { build with
-            Levels =
-                build.Levels
-                |> Map.add
-                    hand
-                    { Chips = level.Chips + two.Chips - one.Chips
-                      Mult = level.Mult + two.Mult - one.Mult } }
+    let value (joker: Jokers.Joker) =
+        match joker.Key with
+        | "j_swashbuckler" -> Some(float (sell - joker.SellValue))
+        | "j_abstract" -> Some(3.0 * float jokers.Length)
+        // the game applies the Stencil multiplier only while a slot is empty
+        | "j_stencil" -> Some(if empty > 0 then float (empty + stencils) else 0.0)
+        | "j_bull" -> Some(2.0 * float money)
+        | "j_bootstraps" -> Some(2.0 * float (money / 5))
+        | _ -> joker.Value
+
+    { build with Jokers = jokers |> List.map (fun joker -> { joker with Value = value joker }) }
+
+let private apply (build: Build) offer =
+    let paid = { build.Situation with Money = build.Situation.Money - cost offer }
+
+    revalue (
+        match offer with
+        | JokerOffer(_, joker, _) ->
+            let slot = if joker.Edition = Some Negative then 1 else 0
+
+            { build with
+                Jokers = build.Jokers @ [ joker ]
+                Situation = { paid with JokerSlots = paid.JokerSlots + slot } }
+        | PlanetOffer(_, hand, _, _) ->
+            let one = handLevel hand 1
+            let two = handLevel hand 2
+            let level = build.Levels[hand]
+
+            { build with
+                Levels =
+                    build.Levels
+                    |> Map.add
+                        hand
+                        { Chips = level.Chips + two.Chips - one.Chips
+                          Mult = level.Mult + two.Mult - one.Mult }
+                Situation = paid }
+    )
 
 let evaluate (seed: int) (samples: int) (money: int) (build: Build) (offers: Offer list) : Evaluated list =
-    let before = roundScore seed samples build
+    let current = revalue build
+    let before = roundScore seed samples current
 
     offers
     |> List.filter (fun offer ->
@@ -114,7 +147,7 @@ let evaluate (seed: int) (samples: int) (money: int) (build: Build) (offers: Off
     |> List.map (fun offer ->
         { Offer = offer
           Before = before
-          After = roundScore seed samples (apply build offer)
+          After = roundScore seed samples (apply current offer)
           InterestLost = interest money - interest (money - cost offer) })
     |> List.sortBy (fun e -> -(e.After / e.Before), cost e.Offer, position e.Offer)
 
@@ -135,8 +168,13 @@ let bestOrder (seed: int) (samples: int) (build: Build) : int list =
     if build.Jokers.Length > 5 then
         current
     else
-        permutations current
-        |> List.map (fun order ->
-            order, roundScore seed samples { build with Jokers = order |> List.map (fun i -> build.Jokers[i]) })
-        |> List.reduce (fun best next -> if snd next > snd best then next else best)
-        |> fst
+        let scored =
+            permutations current
+            |> Array.ofList
+            |> Array.Parallel.map (fun order ->
+                order, roundScore seed samples { build with Jokers = order |> List.map (fun i -> build.Jokers[i]) })
+
+        let best = scored |> Array.reduce (fun best next -> if snd next > snd best then next else best)
+        let currentScore = scored |> Array.find (fun (order, _) -> order = current) |> snd
+
+        if snd best >= 1.02 * currentScore then fst best else current

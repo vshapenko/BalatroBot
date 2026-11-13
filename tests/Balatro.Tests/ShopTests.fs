@@ -48,6 +48,18 @@ let private build jokers : Build =
 
 let private jupiter cost = PlanetOffer(1, Flush, "Jupiter", cost)
 
+let private aces = List.replicate 52 (card Ace Spades)
+
+let private withSituation f (b: Build) = { b with Situation = f b.Situation }
+
+let private plays round : Map<HandType, int * int> =
+    [ FlushFive; FullHouse; Flush; Straight; ThreeOfAKind; TwoPair; Pair; HighCard ]
+    |> List.map (fun t -> t, (0, round))
+    |> Map.ofList
+
+let private valueOf key (b: Build) =
+    (b.Jokers |> List.find (fun j -> j.Key = key)).Value
+
 let private entry gain lost : Evaluated =
     { Offer = jupiter 3
       Before = 100.0
@@ -97,6 +109,90 @@ let ``best order puts the additive joker before the multiplier`` () =
     Assert.Equal<int list>([ 1; 0 ], bestOrder 100 4 (build [ joker "j_duo"; joker "j_jolly" ]))
 
 [<Fact>]
+let ``best order keeps the current order unless the gain is at least 2 percent`` () =
+    let same = build [ joker "j_joker"; joker "j_joker" ]
+    Assert.Equal<int list>([ 0; 1 ], bestOrder 100 4 same)
+
+    let mixed = build [ joker "j_duo"; joker "j_jolly" ]
+    Assert.Equal<int list>(bestOrder 100 4 mixed, bestOrder 100 4 mixed)
+
+[<Fact>]
+let ``revalue computes the build dependent jokers as the game does`` () =
+    let other = { joker "j_joker" with SellValue = 3 }
+    let one key = build [ { joker key with SellValue = 2; Value = Some 99.0 }; other ]
+    let rich money = withSituation (fun s -> { s with Money = money }) (one "j_bull")
+
+    Assert.Equal(Some 3.0, valueOf "j_swashbuckler" (revalue (one "j_swashbuckler")))
+    Assert.Equal(Some 6.0, valueOf "j_abstract" (revalue (one "j_abstract")))
+    // card.lua:4203-4206: card_limit - #jokers + number of Joker Stencils = 5 - 2 + 1
+    Assert.Equal(Some 4.0, valueOf "j_stencil" (revalue (one "j_stencil")))
+    Assert.Equal(Some 20.0, valueOf "j_bull" (revalue (rich 10)))
+    Assert.Equal(Some 4.0, valueOf "j_bootstraps" (revalue (withSituation (fun s -> { s with Money = 13 }) (one "j_bootstraps"))))
+    Assert.Equal(Some 99.0, valueOf "j_steel_joker" (revalue (one "j_steel_joker")))
+
+[<Fact>]
+let ``a bought joker and the money it costs change the build dependent values`` () =
+    let bull = { joker "j_bull" with Value = Some 99.0 }
+    let owned = withSituation (fun s -> { s with Money = 10 }) (build [ bull ])
+    let offer = JokerOffer(0, joker "j_joker", 4)
+    let evaluated = (evaluate 100 2 10 owned [ offer ]).Head
+
+    let expected =
+        withSituation (fun s -> { s with Money = 6 }) (build [ { bull with Value = Some 12.0 }; joker "j_joker" ])
+
+    Assert.Equal(roundScore 100 2 expected, evaluated.After)
+    Assert.Equal(roundScore 100 2 (build [ { bull with Value = Some 20.0 } ] |> withSituation (fun s -> { s with Money = 10 })), evaluated.Before)
+
+[<Fact>]
+let ``the simulated round spends the discards before it plays`` () =
+    let discards = withSituation (fun s -> { s with DiscardsLeft = 4 })
+    Assert.Equal(roundScore 100 4 (discards (build [])), roundScore 100 4 (discards (build [ joker "j_banner" ])))
+
+[<Fact>]
+let ``the simulated round keeps its own play counts`` () =
+    let sharp = build [ joker "j_card_sharp" ] |> withSituation (fun s -> { s with HandPlays = plays 0 })
+    let carried = sharp |> withSituation (fun s -> { s with HandPlays = plays 1 })
+    let repeating = { sharp with Deck = aces }
+    let none = { repeating with Jokers = [] }
+
+    Assert.Equal(roundScore 100 2 sharp, roundScore 100 2 carried)
+    Assert.Equal(roundScore 100 2 repeating, roundScore 100 2 { repeating with Situation = carried.Situation })
+    // Flush Five of Aces: (160 + 55) chips x 16 mult; Card Sharp x3 from the second play on
+    Assert.Equal(13760.0, roundScore 100 2 none)
+    Assert.Equal(34400.0, roundScore 100 2 repeating)
+
+    // Supernova adds the run count including the play being scored: 17 + 18 + 19 + 20
+    let nova = { none with Jokers = [ joker "j_supernova" ] }
+    Assert.Equal(15910.0, roundScore 100 2 nova)
+
+[<Fact>]
+let ``a joker offer needs a free slot whatever its edition`` () =
+    let negative = { joker "j_jolly" with Edition = Some Negative }
+    let offers = [ JokerOffer(0, negative, 3); JokerOffer(1, joker "j_jolly", 3) ]
+    let full = build (List.replicate 5 (joker "j_joker"))
+    Assert.Empty(evaluate 100 2 10 full offers)
+
+    let free = build (List.replicate 4 (joker "j_joker"))
+    Assert.Equal<int list>([ 0; 1 ], evaluate 100 2 10 free offers |> List.map (fun e -> position e.Offer) |> List.sort)
+
+[<Fact>]
+let ``a joker stencil is valued by the empty slots the build has`` () =
+    let stencil = { joker "j_stencil" with Value = Some 99.0 }
+    let four = List.replicate 4 (joker "j_joker")
+    Assert.Equal(Some 0.0, valueOf "j_stencil" (revalue (build (stencil :: four))))
+
+    let negative = { joker "j_jolly" with Edition = Some Negative }
+    let owned = build (stencil :: List.replicate 3 (joker "j_joker"))
+    let evaluated = (evaluate 100 2 10 owned [ JokerOffer(0, negative, 3) ]).Head
+
+    // 6 slots - 5 jokers + 1 Stencil
+    let expected =
+        { build ({ stencil with Value = Some 2.0 } :: List.replicate 3 (joker "j_joker") @ [ negative ]) with
+            Situation = { Jokers.Situation.empty with JokerSlots = 6; Money = -3 } }
+
+    Assert.Equal(roundScore 100 2 expected, evaluated.After)
+
+[<Fact>]
 let ``policy never buys the tarot in the fixture shop`` () =
     let text = File.ReadAllText(AppContext.BaseDirectory + "fixtures/gamestate.SHOP.json")
 
@@ -125,3 +221,26 @@ let ``policy never buys the tarot in the fixture shop`` () =
     Assert.Equal(Policy.BuyCard 1, action)
     Assert.Equal("buy Earth for $1", decision.Chosen)
     Assert.Equal(decision.Chosen, decision.Candidates.Head.Action)
+
+[<Fact>]
+let ``policy passes the shop with full joker slots and says so`` () =
+    let text = File.ReadAllText(AppContext.BaseDirectory + "fixtures/gamestate.SHOP.json")
+
+    let g =
+        match Api.decodeGameState (JsonDocument.Parse(text).RootElement) with
+        | Ok g -> g
+        | Error e -> failwith e
+
+    let plain = { g.Shop.Cards[1] with Set = Api.CardSet.Joker; Key = "j_joker"; Label = "Joker" }
+    let owned = [ for i in 1..5 -> { plain with Id = 100 + i } ]
+
+    let full =
+        { g with
+            Money = 20
+            Jokers = { g.Jokers with Count = 5; Cards = owned }
+            Shop = { g.Shop with Cards = [ plain ] } }
+
+    match Policy.decide 1 full with
+    | Policy.NextRound, decision -> Assert.Equal("joker slots are full", decision.Rule)
+    | Policy.ReorderJokers _, _ -> ()
+    | other, _ -> failwithf "unexpected %A" other
