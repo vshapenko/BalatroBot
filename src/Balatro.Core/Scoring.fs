@@ -25,8 +25,16 @@ type ScoreBreakdown =
 // None marks a retrigger: it shows in the steps but changes nothing
 type private Entry = string * Effect option
 
+// A union's ToString goes through reflection-based formatting, far slower than a match
+let private suitLabel suit =
+    match suit with
+    | Spades -> "Spades"
+    | Hearts -> "Hearts"
+    | Clubs -> "Clubs"
+    | Diamonds -> "Diamonds"
+
 let private cardLabel (card: Card) =
-    $"{Rank.label card.Rank} of {card.Suit}"
+    $"{Rank.label card.Rank} of {suitLabel card.Suit}"
 
 let private playedEffects (card: Card) =
     let chips =
@@ -85,7 +93,7 @@ let private applyEntry (chips, mult, steps) ((source, effect): Entry) =
 
 let scoreWith (situation: Situation) (input: ScoreInput) : ScoreBreakdown =
     let rules = JokerRegistry.rules situation.Jokers
-    let handType, classified = classifyWith rules input.Played
+    let handType, classified, containedTypes = classifyContained rules input.Played
     let level = input.Levels[handType]
     let jokers = Array.ofList situation.Jokers
 
@@ -95,7 +103,7 @@ let scoreWith (situation: Situation) (input: ScoreInput) : ScoreBreakdown =
           Seen = (if rules.Splash then input.Played else classified)
           Held = input.Held
           HandType = handType
-          Contained = contained rules input.Played
+          Contained = containedTypes
           Rules = rules
           Situation = situation }
 

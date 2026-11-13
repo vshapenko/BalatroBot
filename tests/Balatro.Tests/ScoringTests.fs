@@ -1,6 +1,9 @@
 module Balatro.Tests.ScoringTests
 
+open System
+open System.Globalization
 open Xunit
+open Balatro.Core
 open Balatro.Core.Domain
 open Balatro.Core.Scoring
 open Balatro.Tests.HandsTests
@@ -140,3 +143,105 @@ let ``Steps of a Pair of Kings with a Glass Red Seal King`` () =
 
     Assert.Equal<ScoreStep list>(expected, result.Steps)
     Assert.Equal(320.0, result.Total)
+
+let private pick (rng: Random) (options: 'a list) =
+    if rng.Next 4 = 0 then Some options[rng.Next options.Length] else None
+
+let private decorate (rng: Random) (c: Card) =
+    { c with
+        Enhancement =
+            pick
+                rng
+                [ Enhancement.Bonus
+                  Enhancement.Mult
+                  Enhancement.Wild
+                  Enhancement.Glass
+                  Enhancement.Steel
+                  Enhancement.Stone
+                  Enhancement.Gold
+                  Enhancement.Lucky ]
+        Edition = pick rng [ Foil; Holo; Polychrome; Negative ]
+        Seal = pick rng [ Seal.Red; Seal.Blue; Seal.Gold; Seal.Purple ]
+        Debuffed = rng.Next 20 = 0 }
+
+let private randomCase (rng: Random) =
+    let keys = Set.toList JokerRegistry.implemented
+
+    let cards =
+        [ for suit in [ Spades; Hearts; Clubs; Diamonds ] do
+              for rank in [ Two; Three; Four; Five; Six; Seven; Eight; Nine; Ten; Jack; Queen; King; Ace ] ->
+                  card rank suit ]
+        |> List.sortBy (fun _ -> rng.Next())
+        |> List.map (decorate rng)
+
+    let playedCount = 1 + rng.Next 5
+    let heldCount = rng.Next 6
+
+    let jokers: Jokers.Joker list =
+        [ for _ in 1 .. rng.Next 6 ->
+              let key = keys[rng.Next keys.Length]
+
+              { Key = key
+                Name = key
+                Edition = pick rng [ Foil; Holo; Polychrome; Negative ]
+                Debuffed = rng.Next 10 = 0
+                Value = Some(float (rng.Next 11))
+                SellValue = 1 + rng.Next 9
+                Text = "" } ]
+
+    let situation =
+        { Jokers.Situation.empty with
+            Jokers = jokers
+            HandsLeft = rng.Next 5
+            DiscardsLeft = rng.Next 4
+            Money = rng.Next 30
+            DeckCount = 10 + rng.Next 35
+            JokerSlots = 5 }
+
+    situation,
+    { Played = cards |> List.take playedCount
+      Held = cards |> List.skip playedCount |> List.take heldCount
+      Levels = levelsAt (1 + rng.Next 4) }
+
+let private digest (b: ScoreBreakdown) =
+    let number (x: float) = x.ToString("R", CultureInfo.InvariantCulture)
+
+    let steps =
+        b.Steps
+        |> List.map (fun s -> $"{s.Source}={number s.Chips}x{number s.Mult}")
+        |> String.concat ";"
+
+    let cards = b.ScoringCards |> List.map (fun c -> string (Rank.id c.Rank)) |> String.concat ","
+    $"{HandType.label b.HandType}|{number b.Total}|{number b.Chips}|{number b.Mult}|{cards}|{steps}"
+
+// One FNV-1a hash per 50 cases, so a mismatch points at a range of cases
+let private caseHashes () =
+    let rng = Random 20260101
+
+    [ for _ in 1..10 ->
+          Seq.fold
+              (fun hash _ ->
+                  let situation, input = randomCase rng
+
+                  digest (scoreWith situation input)
+                  |> Seq.fold (fun h (c: char) -> (h ^^^ uint64 c) * 1099511628211UL) hash)
+              14695981039346656037UL
+              (seq { 1..50 })
+          |> fun h -> h.ToString "x16" ]
+
+[<Fact>]
+let ``500 seeded random scores equal those of the implementation before the speed-up`` () =
+    // generated from the code at the parent commit: total, chips, mult, scoring cards and every step
+    let expected =
+        [ "e8f627b27794d035"
+          "b7037ddc7343b7f2"
+          "443eefb5ebb42b3e"
+          "29396441fe8469ae"
+          "6b11f3f0a8aefbfd"
+          "6edde6ef122dd486"
+          "08460346542252c1"
+          "f5759f2d00dc61f7"
+          "0eee93faf6b29caf"
+          "5f1f72f601c49f97" ]
+
+    Assert.Equal<string list>(expected, caseHashes ())

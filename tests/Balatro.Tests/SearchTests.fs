@@ -196,3 +196,122 @@ let ``policy still plays the fixture hand`` () =
         Assert.Equal(Policy.Play [ 0; 1; 4; 5; 6 ], action)
         Assert.Equal(Some 336.0, decision.Predicted)
     | Error e -> failwith e
+
+let private goldenInput =
+    let joker key : Jokers.Joker =
+        { Key = key
+          Name = key
+          Edition = None
+          Debuffed = false
+          Value = None
+          SellValue = 1
+          Text = "" }
+
+    let hand =
+        [ card King Spades
+          { card King Hearts with Seal = Some Seal.Red }
+          card Queen Diamonds
+          card Seven Clubs
+          { card Seven Spades with Edition = Some Foil }
+          card Five Hearts
+          card Three Diamonds
+          { card King Clubs with Enhancement = Some Enhancement.Steel } ]
+
+    let deck =
+        [ for suit in [ Spades; Hearts; Clubs; Diamonds ] do
+              for rank in [ Two; Three; Four; Five; Six; Seven; Eight; Nine; Ten; Jack; Queen; King; Ace ] ->
+                  card rank suit ]
+        |> List.filter (fun c -> not (hand |> List.exists (fun h -> h.Rank = c.Rank && h.Suit = c.Suit)))
+
+    let situation =
+        { Jokers.Situation.empty with
+            Jokers = [ joker "j_joker"; joker "j_jolly"; joker "j_baron"; joker "j_blueprint"; joker "j_hanging_chad" ]
+            JokerSlots = 5
+            DeckCount = 44 }
+
+    { input hand deck 4 3 1e9 with
+        Seed = 100
+        RedrawSamples = 8
+        Score =
+            fun handsLeft discardsLeft played held ->
+                Scoring.scoreWith
+                    { situation with
+                        HandsLeft = handsLeft
+                        DiscardsLeft = discardsLeft }
+                    { Played = played; Held = held; Levels = levels } }
+
+[<Fact>]
+let ``evaluate keeps its outlooks with five jokers`` () =
+    let actual =
+        Search.evaluate goldenInput
+        |> List.map (fun (candidate, outlook) ->
+            match candidate with
+            | Search.PlayCards(indices, _, _) -> "play", indices, outlook.Clears, outlook.MeanHands, outlook.MeanChips
+            | Search.DiscardCards(indices, _) -> "discard", indices, outlook.Clears, outlook.MeanHands, outlook.MeanChips)
+
+    let expected =
+        [ "discard", [ 2; 3; 5; 6 ], 0.0, 4.0, 9506.775
+          "discard", [ 0; 2; 3; 5; 6 ], 0.0, 4.0, 8388.4
+          "discard", [ 2; 6 ], 0.0, 4.0, 8293.175
+          "discard", [ 2; 5 ], 0.0, 4.0, 8172.625
+          "discard", [ 2; 3 ], 0.0, 4.0, 8067.225
+          "discard", [ 5; 6 ], 0.0, 4.0, 8033.4
+          "play", [ 4; 5; 6 ], 0.0, 4.0, 7427.0
+          "play", [ 4 ], 0.0, 4.0, 6993.175
+          "play", [ 2; 3; 4; 5; 6 ], 0.0, 4.0, 6822.1
+          "play", [ 3; 4 ], 0.0, 4.0, 6590.5
+          "play", [ 0; 1; 3; 4; 7 ], 0.0, 4.0, 5758.675 ]
+
+    Assert.Equal<(string * int list * float * float * float) list>(expected, actual)
+
+[<Fact>]
+let ``the first discards and plays keep their order and values with five jokers`` () =
+    let discards = Search.discards goldenInput |> List.truncate 20
+    let plays = Search.plays goldenInput |> List.truncate 20 |> List.map (fun (indices, _, b) -> indices, b.Total)
+
+    let expectedDiscards =
+        [ [ 2; 3; 5; 6 ], 4304.5
+          [ 5; 6 ], 4174.75
+          [ 0; 2; 3; 5; 6 ], 4147.5
+          [ 2; 3 ], 4105.625
+          [ 2; 5 ], 4105.625
+          [ 2; 6 ], 4105.625
+          [ 3; 5 ], 4105.625
+          [ 3; 6 ], 4105.625
+          [ 2; 3; 5 ], 4105.625
+          [ 2; 3; 6 ], 4105.625
+          [ 2; 5; 6 ], 4105.625
+          [ 3; 5; 6 ], 4105.625
+          [ 2 ], 3499.625
+          [ 3 ], 3499.625
+          [ 5 ], 3499.625
+          [ 6 ], 3499.625
+          [ 0; 2; 5; 6 ], 3399.625
+          [ 0; 2; 3; 5 ], 3368.0
+          [ 0; 2; 3; 6 ], 3368.0
+          [ 0; 3; 5; 6 ], 3368.0 ]
+
+    let expectedPlays =
+        [ [ 4 ], 3362.0
+          [ 4; 5 ], 3362.0
+          [ 4; 6 ], 3362.0
+          [ 4; 5; 6 ], 3362.0
+          [ 0; 1; 3; 4; 7 ], 2944.0
+          [ 3; 4 ], 2773.0
+          [ 2; 3; 4 ], 2773.0
+          [ 3; 4; 5 ], 2773.0
+          [ 3; 4; 6 ], 2773.0
+          [ 2; 3; 4; 5 ], 2773.0
+          [ 2; 3; 4; 6 ], 2773.0
+          [ 3; 4; 5; 6 ], 2773.0
+          [ 2; 3; 4; 5; 6 ], 2773.0
+          [ 0; 1; 3; 4 ], 2541.0
+          [ 0; 1; 2; 3; 4 ], 2541.0
+          [ 0; 1; 3; 4; 5 ], 2541.0
+          [ 0; 1; 3; 4; 6 ], 2541.0
+          [ 0; 3; 4; 7 ], 2376.0
+          [ 0; 2; 3; 4; 7 ], 2376.0
+          [ 0; 3; 4; 5; 7 ], 2376.0 ]
+
+    Assert.Equal<(int list * float) list>(expectedDiscards, discards)
+    Assert.Equal<(int list * float) list>(expectedPlays, plays)
