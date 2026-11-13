@@ -493,3 +493,45 @@ let ``the runner waits while every hand card is still debuffed`` () =
                         :: all.Hand.Cards.Tail } }
 
     Assert.False(Runner.allHandDebuffed one)
+
+// live play gives these jokers no value: only the text carries it
+let private decaying key text : Jokers.Joker = { joker key with Text = text }
+
+let private iceCream value =
+    decaying "j_ice_cream" $"+%g{value} Chips -5 Chips for every hand played"
+
+let private popcorn value =
+    decaying "j_popcorn" $"+%g{value} Mult -4 Mult per round played"
+
+let private ramen value =
+    decaying "j_ramen" $"X%g{value} Mult, loses X0.01 Mult per card discarded"
+
+[<Fact>]
+let ``decay lowers Ice Cream, Popcorn and Ramen by what the next rounds take`` () =
+    let aged = decay (build [ iceCream 100.0; popcorn 20.0; ramen 2.0; joker "j_joker" ]) 2
+
+    Assert.StartsWith("+60 Chips", aged.Jokers[0].Text)
+    Assert.StartsWith("+12 Mult", aged.Jokers[1].Text)
+    Assert.StartsWith("X1.84 Mult", aged.Jokers[2].Text)
+    Assert.Equal("", aged.Jokers[3].Text)
+
+[<Fact>]
+let ``decay stops Ice Cream at zero`` () =
+    let aged = decay (build [ iceCream 30.0 ]) 2
+    Assert.StartsWith("+0 Chips", aged.Jokers.Head.Text)
+
+[<Fact>]
+let ``a Popcorn offer is worth less than plain mult when it is about to run out`` () =
+    let gain offered =
+        let e = evaluate 100 8 10 (build []) [ JokerOffer(0, offered, 5) ] |> List.exactlyOne
+        e.After / e.Before
+
+    let plain = { joker "j_joker" with Value = Some 4.0 }
+    Assert.True(gain (popcorn 6.0) < gain plain)
+    Assert.True(gain (popcorn 20.0) > gain plain)
+
+[<Fact>]
+let ``a build without decaying jokers is scored as one round`` () =
+    let owned = build [ joker "j_joker" ]
+    let e = evaluate 100 8 10 owned [ jupiter 3 ] |> List.exactlyOne
+    Assert.Equal(roundScore 100 8 (revalue owned), e.Before)

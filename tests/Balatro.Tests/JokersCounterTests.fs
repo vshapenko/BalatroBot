@@ -205,3 +205,13 @@ let ``Jokers without a score effect leave the total unchanged and count as imple
     |> List.iter (fun key ->
         Assert.Equal(60.0, total [ joker key ] kk [])
         Assert.Contains(key, Balatro.Core.JokerRegistry.implemented))
+
+[<Fact>]
+let ``Ramen multiplies by the value the game holds, not the rounded text`` () =
+    let ramen text = joker "j_ramen" |> withText text
+    // chips 30 + 270, mult 2 + 36 gives 11400 before Ramen
+    let around ramen =
+        total [ joker "j_castle" |> withValue 270.0; joker "j_ceremonial" |> withValue 36.0; ramen ] kk []
+
+    Assert.Equal(16757.0, around (ramen "X1.47 Mult, loses X0.01 Mult per card discarded"))
+    Assert.Equal(22800.0, around (ramen "X2 Mult, loses X0.01 Mult per card discarded"))

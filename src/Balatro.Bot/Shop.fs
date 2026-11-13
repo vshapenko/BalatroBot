@@ -1,6 +1,8 @@
 module Balatro.Bot.Shop
 
 open System
+open System.Globalization
+open System.Text.RegularExpressions
 open Balatro.Core
 open Balatro.Core.Domain
 
@@ -108,6 +110,39 @@ let revalue (build: Build) : Build =
 
     { build with Jokers = jokers |> List.map (fun joker -> { joker with Value = value joker }) }
 
+let private decaying = set [ "j_ice_cream"; "j_popcorn"; "j_ramen" ]
+
+let decay (build: Build) (rounds: int) : Build =
+    let ahead = float rounds
+    let leading = Regex(@"^([+X])(\d+(?:\.\d+)?)")
+
+    // the engine reads these jokers from the card text, so only the text is aged
+    let aged (joker: Jokers.Joker) =
+        let m = leading.Match joker.Text
+
+        let set value =
+            let shown = (value: float).ToString("0.##", CultureInfo.InvariantCulture)
+            { joker with Text = leading.Replace(joker.Text, m.Groups[1].Value + shown) }
+
+        if not m.Success then
+            joker
+        else
+            let value = Double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture)
+
+            match joker.Key with
+            | "j_ice_cream" -> set (max 0.0 (value - 5.0 * 4.0 * ahead))
+            | "j_popcorn" -> set (max 0.0 (value - 4.0 * ahead))
+            | "j_ramen" -> set (max 1.0 (Math.Round(value - 0.01 * 8.0 * ahead, 2)))
+            | _ -> joker
+
+    { build with Jokers = build.Jokers |> List.map aged }
+
+let private horizon (seed: int) (samples: int) (build: Build) : float =
+    if build.Jokers |> List.exists (fun joker -> decaying.Contains joker.Key) then
+        [ 0; 1; 2 ] |> List.averageBy (fun rounds -> roundScore seed samples (revalue (decay build rounds)))
+    else
+        roundScore seed samples (revalue build)
+
 let private apply (build: Build) offer =
     let paid = { build.Situation with Money = build.Situation.Money - cost offer }
 
@@ -136,7 +171,7 @@ let private apply (build: Build) offer =
 
 let evaluate (seed: int) (samples: int) (money: int) (build: Build) (offers: Offer list) : Evaluated list =
     let current = revalue build
-    let before = roundScore seed samples current
+    let before = horizon seed samples current
 
     offers
     |> List.filter (fun offer ->
@@ -147,7 +182,7 @@ let evaluate (seed: int) (samples: int) (money: int) (build: Build) (offers: Off
     |> List.map (fun offer ->
         { Offer = offer
           Before = before
-          After = roundScore seed samples (apply current offer)
+          After = horizon seed samples (apply current offer)
           InterestLost = interest money - interest (money - cost offer) })
     |> List.sortBy (fun e -> -(e.After / e.Before), cost e.Offer, position e.Offer)
 
@@ -192,7 +227,7 @@ let upgrades (seed: int) (samples: int) (money: int) (build: Build) (offers: Off
         []
     else
         let current = revalue build
-        let before = roundScore seed samples current
+        let before = horizon seed samples current
 
         [ for offer in offers do
               match offer with
@@ -213,7 +248,7 @@ let upgrades (seed: int) (samples: int) (money: int) (build: Build) (offers: Off
                               { Sell = sell
                                 Offer = offer
                                 Before = before
-                                After = roundScore seed samples (apply sold offer)
+                                After = horizon seed samples (apply sold offer)
                                 Net = net
                                 Threshold = 1.05 + 0.05 * float (interest held - interest (held - price)) }
               | PlanetOffer _ -> () ]

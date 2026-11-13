@@ -100,7 +100,11 @@ let defs: (string * JokerDef) list =
           Main = fun _ joker -> mult (leading "+" joker) }
       "j_ramen",
       { JokerDef.none with
-          Main = fun _ joker -> times (leading "X" joker) }
+          // the game subtracts 0.01 once per discarded card from 2, so the text value is rebuilt the same way
+          Main =
+            fun _ joker ->
+                let discarded = int (Math.Round((2.0 - leading "X" joker) / 0.01))
+                times (Seq.fold (fun factor _ -> factor - 0.01) 2.0 (seq { 1..discarded })) }
       // the hand counter moves after scoring, so the hand that pays shows as active in the text
       "j_loyalty_card",
       { JokerDef.none with
