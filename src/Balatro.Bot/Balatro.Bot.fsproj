@@ -7,6 +7,10 @@
 
   <ItemGroup>
     <Compile Include="Api.fs" />
+    <Compile Include="Mapping.fs" />
+    <Compile Include="Decision.fs" />
+    <Compile Include="Policy.fs" />
+    <Compile Include="Runner.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

@@ -10,6 +10,7 @@
     <Compile Include="ScoringTests.fs" />
     <Compile Include="BlindsTests.fs" />
     <Compile Include="ApiTests.fs" />
+    <Compile Include="SkeletonTests.fs" />
     <Content Include="../../fixtures/**" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
