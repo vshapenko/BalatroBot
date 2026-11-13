@@ -8,6 +8,11 @@
   <ItemGroup>
     <Compile Include="Domain.fs" />
     <Compile Include="Hands.fs" />
+    <Compile Include="Jokers.fs" />
+    <Compile Include="JokersMain.fs" />
+    <Compile Include="JokersCard.fs" />
+    <Compile Include="JokersCounter.fs" />
+    <Compile Include="JokerRegistry.fs" />
     <Compile Include="Scoring.fs" />
     <Compile Include="Blinds.fs" />
   </ItemGroup>

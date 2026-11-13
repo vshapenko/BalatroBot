@@ -11,6 +11,11 @@
     <Compile Include="BlindsTests.fs" />
     <Compile Include="ApiTests.fs" />
     <Compile Include="SkeletonTests.fs" />
+    <Compile Include="JokerEngineTests.fs" />
+    <Compile Include="JokersMainTests.fs" />
+    <Compile Include="JokersCardTests.fs" />
+    <Compile Include="JokersCounterTests.fs" />
+    <Compile Include="SearchTests.fs" />
     <Content Include="../../fixtures/**" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

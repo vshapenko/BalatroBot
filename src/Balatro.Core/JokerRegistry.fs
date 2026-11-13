@@ -1,0 +1,1 @@
+module Balatro.Core.JokerRegistry
