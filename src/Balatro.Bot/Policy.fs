@@ -440,13 +440,7 @@ let private packAction seq (g: Api.GameState) =
             | Api.CardSet.Planet -> planetHand c.Key |> Option.map (fun hand -> Shop.PlanetOffer(i, hand, c.Label, 0))
             | _ -> None)
 
-    // the mod never answers a pack call when the first card of the pack is a Spectral card
-    let unsafeFirst =
-        match g.Pack.Cards with
-        | first :: _ -> first.Set <> Api.CardSet.Joker && first.Set <> Api.CardSet.Planet
-        | [] -> false
-
-    match (if unsafeFirst then None else Shop.pickFromPack (shopSeed g) 20 build cards) with
+    match Shop.pickFromPack (shopSeed g) 20 build cards with
     | Some e ->
         let name = offerName e.Offer
 
@@ -464,9 +458,7 @@ let private packAction seq (g: Api.GameState) =
             None
     | None ->
         let rule =
-            if unsafeFirst then
-                "the first card of the pack is one this version cannot handle safely"
-            elif cards.IsEmpty then
+            if cards.IsEmpty then
                 "the pack holds cards this version does not evaluate"
             else
                 "nothing in the pack raises the simulated round score"

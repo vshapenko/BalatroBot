@@ -3,6 +3,9 @@
 # runs never write to the player's real Balatro save.
 # First use: copy the Mods folder and a profile into
 #   $BOT_HOME/Library/Application Support/Balatro
+# and apply patches/balatrobot-pack-hand.patch inside Mods/balatrobot
+# (git apply): without it the mod hangs on a pack whose first card is
+# a Spectral card, such as a Celestial pack opening with Black Hole.
 set -euo pipefail
 
 BOT_HOME="${BALATRO_BOT_HOME:-$HOME/.balatro-bot-home}"

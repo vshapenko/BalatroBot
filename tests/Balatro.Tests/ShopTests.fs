@@ -386,12 +386,15 @@ let ``policy falls back to a celestial pack when no buffoon pack is affordable``
     Assert.Equal("buy Jumbo Celestial Pack for $6", decision.Chosen)
 
 [<Fact>]
-let ``policy skips a pack whose first card is a spectral card`` () =
+let ``a spectral first card does not stop the pick from the rest of the pack`` () =
     let g = load "SMODS_BOOSTER_OPENED"
-    let spectral = { g.Pack.Cards[0] with Set = Api.CardSet.Spectral }
-    let action, decision = Policy.decide 1 { g with Pack = { g.Pack with Cards = spectral :: g.Pack.Cards.Tail } }
-    Assert.Equal(Policy.SkipPack, action)
-    Assert.Contains("cannot handle safely", decision.Rule)
+    let spectral = { g.Pack.Cards[0] with Set = Api.CardSet.Spectral; Key = "c_black_hole"; Label = "Black Hole" }
+    let original, _ = Policy.decide 1 g
+    let action, _ = Policy.decide 1 { g with Pack = { g.Pack with Cards = spectral :: g.Pack.Cards } }
+
+    match original with
+    | Policy.PickPack i -> Assert.Equal(Policy.PickPack(i + 1), action)
+    | other -> Assert.Equal(other, action)
 
 let private jokerCard key label =
     let shop = load "SHOP"
