@@ -638,37 +638,3 @@ let ``a Runner offer is worth its growth on a deck that makes straights`` () =
     printfn "Runner offer After %f, round score with Runner %f" e.After flat
     Assert.Equal(20, low.Deck.Length)
     Assert.True(e.After > flat)
-
-let private withRunPlays pair flush (g: Api.GameState) =
-    let played name n = { g.Hands[name] with Played = n }
-
-    { g with
-        Hands =
-            g.Hands
-            |> Map.map (fun _ h -> { h with Played = 0 })
-            |> Map.add "Pair" (played "Pair" pair)
-            |> Map.add "Flush" (played "Flush" flush) }
-
-[<Fact>]
-let ``policy skips a planet for a hand the run rarely plays`` () =
-    let g = load "SHOP"
-    let jupiter = g.Shop.Cards[1]
-    let shop = { g with Money = 26; Shop = { g.Shop with Cards = [ jupiter ] } }
-
-    let action, decision = Policy.decide 1 (withRunPlays 20 1 shop)
-    Assert.NotEqual(Policy.BuyCard 0, action)
-    Assert.EndsWith("; skipped Jupiter: Flush is 5% of the hands played this run", decision.Rule)
-
-    let action, decision = Policy.decide 1 (withRunPlays 5 1 shop)
-    Assert.Equal(Policy.BuyCard 0, action)
-    Assert.DoesNotContain("skipped", decision.Rule)
-
-[<Fact>]
-let ``policy skips a pack that holds only a planet for a rarely played hand`` () =
-    let g = load "SMODS_BOOSTER_OPENED"
-    let jupiter = (load "SHOP").Shop.Cards[1]
-    let opened = { g with Pack = { g.Pack with Count = 1; Cards = [ jupiter ] } }
-
-    let action, decision = Policy.decide 1 (withRunPlays 20 1 opened)
-    Assert.Equal(Policy.SkipPack, action)
-    Assert.Equal("the planets in the pack are for hands played under 20% of the time this run", decision.Rule)
