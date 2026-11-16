@@ -91,7 +91,7 @@ let private applyEntry (chips, mult, steps) ((source, effect): Entry) =
 
     chips, mult, { Source = source; Chips = chips; Mult = mult } :: steps
 
-let scoreWith (situation: Situation) (input: ScoreInput) : ScoreBreakdown =
+let private scoreOnce (situation: Situation) (input: ScoreInput) : ScoreBreakdown =
     let rules = JokerRegistry.rules situation.Jokers
     let handType, classified, containedTypes = classifyContained rules input.Played
 
@@ -264,5 +264,29 @@ let scoreWith (situation: Situation) (input: ScoreInput) : ScoreBreakdown =
           Mult = mult
           Total = floor (chips * mult)
           Steps = List.rev steps }
+
+let rec private choose k items =
+    match k, items with
+    | 0, _ -> [ [] ]
+    | _, [] -> []
+    | _, x :: rest -> (choose (k - 1) rest |> List.map (fun picked -> x :: picked)) @ choose k rest
+
+// The Hook discards 2 random held cards before scoring; the bot cannot know which, so it scores the mean
+let scoreWith (situation: Situation) (input: ScoreInput) : ScoreBreakdown =
+    match situation.Boss with
+    | Some Hook when not input.Held.IsEmpty ->
+        let results =
+            choose (min 2 input.Held.Length) [ 0 .. input.Held.Length - 1 ]
+            |> List.map (fun discarded ->
+                let kept =
+                    input.Held |> List.indexed |> List.filter (fun (i, _) -> not (List.contains i discarded)) |> List.map snd
+
+                scoreOnce { situation with Boss = None } { input with Held = kept })
+
+        let first = results.Head
+        let mean = floor (List.sumBy (fun r -> r.Total) results / float results.Length)
+        let step = { Source = $"The Hook (mean of {results.Length} discards)"; Chips = first.Chips; Mult = first.Mult }
+        { first with Total = mean; Steps = first.Steps @ [ step ] }
+    | _ -> scoreOnce situation input
 
 let score (input: ScoreInput) : ScoreBreakdown = scoreWith Situation.empty input

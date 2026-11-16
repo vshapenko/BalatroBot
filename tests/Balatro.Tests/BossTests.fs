@@ -171,7 +171,7 @@ let ``a debuffed Chicot does not disable the boss rule`` () =
 
 [<Fact>]
 let ``a boss without a scoring rule gives no boss`` () =
-    Assert.Equal(None, Mapping.boss (load "SELECTING_HAND" |> withBoss "The Hook"))
+    Assert.Equal(None, Mapping.boss (load "SELECTING_HAND" |> withBoss "The Wall"))
 
 let private pairAtLevel3 (state: Api.GameState) =
     let pair = { state.Hands["Pair"] with Level = 3; Chips = 40; Mult = 4 }
@@ -247,3 +247,33 @@ let ``the Plasma deck sets Balance and the Red deck does not`` () =
 [<Fact>]
 let ``without Balance the King pair still scores 60`` () =
     Assert.Equal(60.0, (scoreWith { Situation.empty with Balance = false } { Played = kk; Held = []; Levels = levels }).Total)
+
+let private hookScore boss jokers held =
+    scoreWith
+        { Situation.empty with
+            Jokers = jokers
+            Boss = boss }
+        { Played = kk
+          Held = held
+          Levels = levels }
+
+let private raisedFist = { jokerJoker with Key = "j_raised_fist"; Name = "Raised Fist" }
+
+[<Fact>]
+let ``The Hook leaves a joker-free score alone because held cards do not matter`` () =
+    let held = [ card Two Spades; card Nine Hearts; card Nine Diamonds ]
+    Assert.Equal((hookScore None [] held).Total, (hookScore (Some Hook) [] held).Total)
+
+[<Fact>]
+let ``The Hook scores the mean over the three single-card-left cases with Raised Fist`` () =
+    let held = [ card Two Spades; card Nine Hearts; card Nine Diamonds ]
+    let single card = (hookScore None [ raisedFist ] [ card ]).Total
+    let mean = floor ((List.sumBy single held) / 3.0)
+    let hooked = hookScore (Some Hook) [ raisedFist ] held
+    Assert.Equal(mean, hooked.Total)
+    Assert.NotEqual((hookScore None [ raisedFist ] held).Total, hooked.Total)
+    Assert.Equal("The Hook (mean of 3 discards)", (List.last hooked.Steps).Source)
+
+[<Fact>]
+let ``The Hook is read from the current boss blind`` () =
+    Assert.Equal(Some Hook, Mapping.boss (load "SELECTING_HAND" |> withBoss "The Hook"))

@@ -17,6 +17,7 @@ type Boss =
     | Eye
     | Mouth
     | Flint
+    | Hook
 
 type Situation =
     { Jokers: Joker list
