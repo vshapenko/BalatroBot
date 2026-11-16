@@ -124,6 +124,34 @@ let private planetHand key =
     | "c_eris" -> Some FlushFive
     | _ -> None
 
+let private planetSkip (plays: Map<HandType, int * int>) hand =
+    let runPlays = plays |> Map.map (fun _ (run, _) -> run)
+    let total = runPlays |> Map.fold (fun sum _ n -> sum + n) 0
+    let most = runPlays |> Map.fold (fun m _ n -> max m n) 0
+    let own = runPlays |> Map.tryFind hand |> Option.defaultValue 0
+
+    if total >= 10 && own < most && own * 5 < total then
+        Some(float own / float total)
+    else
+        None
+
+let private skippedPlanets (g: Api.GameState) (cards: Api.Card list) =
+    let plays = (Mapping.situation g).HandPlays
+
+    cards
+    |> List.filter (fun c -> c.Set = Api.CardSet.Planet)
+    |> List.choose (fun c ->
+        planetHand c.Key
+        |> Option.bind (fun hand ->
+            planetSkip plays hand
+            |> Option.map (fun share ->
+                c,
+                sprintf
+                    "; skipped %s: %s is %.0f%% of the hands played this run"
+                    c.Label
+                    (HandType.label hand)
+                    (share * 100.0))))
+
 let private offerName offer =
     match offer with
     | Shop.JokerOffer(_, joker, _) -> joker.Name
@@ -208,7 +236,9 @@ let private thresholdText (card: Api.Card) (percent: float) =
     else
         sprintf "threshold +%.0f%% (%s)" percent (stickerText card)
 
-let private shopAction seq (g: Api.GameState) =
+let private shopChoice seq (g: Api.GameState) =
+    let skipped = skippedPlanets g g.Shop.Cards
+
     match g.Consumables.Cards |> List.tryFindIndex (fun c -> c.Set = Api.CardSet.Planet) with
     | Some index ->
         let name = g.Consumables.Cards[index].Label
@@ -234,7 +264,9 @@ let private shopAction seq (g: Api.GameState) =
             |> List.choose (fun (i, c) ->
                 match c.Set with
                 | Api.CardSet.Joker -> Some(Shop.JokerOffer(i, Mapping.joker c, c.Cost.Buy))
-                | Api.CardSet.Planet when g.Consumables.Count < g.Consumables.Limit ->
+                | Api.CardSet.Planet when
+                    g.Consumables.Count < g.Consumables.Limit && not (skipped |> List.exists (fun (s, _) -> s.Key = c.Key))
+                    ->
                     planetHand c.Key |> Option.map (fun hand -> Shop.PlanetOffer(i, hand, c.Label, c.Cost.Buy))
                 | _ -> None)
 
@@ -428,8 +460,15 @@ let private shopAction seq (g: Api.GameState) =
 
                             NextRound, decision seq g "next round" rule (evaluated |> List.truncate 5 |> List.map declined) None
 
+let private shopAction seq (g: Api.GameState) =
+    let action, d = shopChoice seq g
+    let skipped = skippedPlanets g g.Shop.Cards |> List.map snd |> String.concat ""
+    action, { d with Rule = d.Rule + skipped }
+
 let private packAction seq (g: Api.GameState) =
     let build = shopBuild g
+    let skipped = skippedPlanets g g.Pack.Cards
+    let skippedText = skipped |> List.map snd |> String.concat ""
 
     let cards =
         g.Pack.Cards
@@ -437,7 +476,8 @@ let private packAction seq (g: Api.GameState) =
         |> List.choose (fun (i, c) ->
             match c.Set with
             | Api.CardSet.Joker -> Some(Shop.JokerOffer(i, Mapping.joker c, 0))
-            | Api.CardSet.Planet -> planetHand c.Key |> Option.map (fun hand -> Shop.PlanetOffer(i, hand, c.Label, 0))
+            | Api.CardSet.Planet when not (skipped |> List.exists (fun (s, _) -> s.Key = c.Key)) ->
+                planetHand c.Key |> Option.map (fun hand -> Shop.PlanetOffer(i, hand, c.Label, 0))
             | _ -> None)
 
     // the mod never answers a pack call when the first card of the pack is a Spectral card
@@ -456,16 +496,21 @@ let private packAction seq (g: Api.GameState) =
             g
             (sprintf "pick %s" name)
             (sprintf
-                "raises the simulated round score from %.0f to %.0f (+%.0f%%)"
+                "raises the simulated round score from %.0f to %.0f (+%.0f%%)%s"
                 e.Before
                 e.After
-                ((e.After / e.Before - 1.0) * 100.0))
+                ((e.After / e.Before - 1.0) * 100.0)
+                skippedText)
             []
             None
     | None ->
+        let planetsLeft = cards |> List.exists (function Shop.PlanetOffer _ -> true | _ -> false)
+
         let rule =
             if unsafeFirst then
                 "the first card of the pack is one this version cannot handle safely"
+            elif not skipped.IsEmpty && not planetsLeft then
+                "the planets in the pack are for hands played under 20% of the time this run"
             elif cards.IsEmpty then
                 "the pack holds cards this version does not evaluate"
             else
