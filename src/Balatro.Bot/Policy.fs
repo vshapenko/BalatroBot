@@ -354,11 +354,11 @@ let private shopAction seq (g: Api.GameState) =
                         None
                 else
                     let slotFree = build.Jokers.Length < build.Situation.JokerSlots
-                    let floor = interestFloor (lastAnte g)
+                    let floor = interestFloor relaxed
                     let celestial = cheapestPack g floor "p_celestial"
 
                     let floorText =
-                        if lastAnte g then
+                        if relaxed then
                             relaxedText
                         else
                             sprintf "stays at or above the $%d interest cap" floor
