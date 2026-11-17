@@ -165,6 +165,24 @@ let ``the simulated round keeps its own play counts`` () =
     let nova = { none with Jokers = [ joker "j_supernova" ] }
     Assert.Equal(15910.0, roundScore 100 2 nova)
 
+let private loyalty remaining =
+    { joker "j_loyalty_card" with Text = $"X4 Mult every 6 hands played {remaining} remaining" }
+
+[<Fact>]
+let ``the simulated round pays Loyalty Card on the hand its counter reaches`` () =
+    Assert.True(roundScore 100 4 (build [ loyalty 1 ]) > roundScore 100 4 (build [ loyalty 5 ]))
+
+[<Fact>]
+let ``a fresh Loyalty Card is worth buying over the horizon`` () =
+    let offer = JokerOffer(0, loyalty 5, 5)
+    let evaluated = evaluate 100 4 10 (build []) [ offer ] |> List.exactlyOne
+    Assert.True(evaluated.After > evaluated.Before)
+
+[<Fact>]
+let ``decay advances the Loyalty Card counter by the hands of the rounds`` () =
+    let aged = decay (build [ loyalty 5 ]) 1
+    Assert.Equal("X4 Mult every 6 hands played 1 remaining", aged.Jokers.Head.Text)
+
 [<Fact>]
 let ``a joker offer needs a free slot whatever its edition`` () =
     let negative = { joker "j_jolly" with Edition = Some Negative }

@@ -24,11 +24,28 @@ type Evaluated =
       After: float
       InterestLost: int }
 
+let private counter = Regex(@"Active!|(\d+) remaining")
+
+let private remaining (text: string) =
+    let m = counter.Match text
+    if m.Groups[1].Success then int m.Groups[1].Value else 0
+
 let private simulate (build: Build) (shuffle: Card[]) : float * (Card list * Scoring.ScoreBreakdown) list =
     let score plays handsLeftAfter discardsLeft played held =
+        // the card pays on the hands N, N+6, ... from now; the engine reads "Active!" as the paying hand
+        let hand = build.Hands - 1 - handsLeftAfter
+
+        let counted (joker: Jokers.Joker) =
+            if joker.Key = "j_loyalty_card" then
+                let left = ((remaining joker.Text - hand) % 6 + 6) % 6
+                let shown = if left = 0 then "Active!" else $"{left} remaining"
+                { joker with Text = counter.Replace(joker.Text, shown) }
+            else
+                joker
+
         Scoring.scoreWith
             { build.Situation with
-                Jokers = build.Jokers
+                Jokers = build.Jokers |> List.map counted
                 HandsLeft = handsLeftAfter
                 DiscardsLeft = discardsLeft
                 HandPlays = plays }
@@ -180,6 +197,9 @@ let decay (build: Build) (rounds: int) : Build =
             | "j_ice_cream" -> set (max 0.0 (value - 5.0 * 4.0 * ahead))
             | "j_popcorn" -> set (max 0.0 (value - 4.0 * ahead))
             | "j_ramen" -> set (max 1.0 (Math.Round(value - 0.01 * 8.0 * ahead, 2)))
+            | "j_loyalty_card" ->
+                let left = ((remaining joker.Text - rounds * build.Hands) % 6 + 6) % 6
+                { joker with Text = counter.Replace(joker.Text, $"{left} remaining") }
             | _ -> joker
 
     { build with Jokers = build.Jokers |> List.map aged }
@@ -216,7 +236,7 @@ let grow (rates: Rates) (rounds: int) (build: Build) : Build =
         Situation = { build.Situation with HandPlays = plays } }
 
 let private horizon (seed: int) (samples: int) (build: Build) : float =
-    if build.Jokers |> List.exists (fun joker -> decaying.Contains joker.Key || growing.Contains joker.Key) then
+    if build.Jokers |> List.exists (fun joker -> decaying.Contains joker.Key || joker.Key = "j_loyalty_card" || growing.Contains joker.Key) then
         let score0, rates = roundStats seed samples (revalue build)
 
         let later =
