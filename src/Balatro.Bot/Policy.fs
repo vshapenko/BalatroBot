@@ -218,6 +218,13 @@ let private thresholdText (card: Api.Card) (percent: float) =
     else
         sprintf "threshold +%.0f%% (%s)" percent (stickerText card)
 
+let private xMultKeys =
+    set
+        [ "j_duo"; "j_trio"; "j_family"; "j_order"; "j_tribe"; "j_cavendish"; "j_blackboard"; "j_flower_pot"
+          "j_seeing_double"; "j_acrobat"; "j_card_sharp"; "j_stencil"; "j_throwback"; "j_photograph"; "j_baron"
+          "j_triboulet"; "j_ancient"; "j_idol"; "j_loyalty_card"; "j_ramen"; "j_baseball"; "j_obelisk"
+          "j_constellation"; "j_madness" ]
+
 let private shopAction seq (g: Api.GameState) =
     match g.Consumables.Cards |> List.tryFindIndex (fun c -> c.Set = Api.CardSet.Planet) with
     | Some index ->
@@ -237,6 +244,14 @@ let private shopAction seq (g: Api.GameState) =
 
         let behind = behindScore.IsSome
         let relaxed = lastAnte g || behind
+
+        let hunting =
+            g.AnteNum >= 2
+            && g.AnteNum <= 4
+            && not (g.Jokers.Cards |> List.exists (fun c -> xMultKeys.Contains c.Key))
+
+        let goalNote =
+            if hunting then sprintf "; goal: find an X-Mult joker (none owned in ante %d)" g.AnteNum else ""
 
         let offers =
             g.Shop.Cards
@@ -289,7 +304,20 @@ let private shopAction seq (g: Api.GameState) =
                     (percent e)
                     (e.InterestLost - stickerLoss (offered e.Offer)) }
 
-        match Shop.choose owned evaluated with
+        let isXMult (e: Shop.Evaluated) =
+            match e.Offer with
+            | Shop.JokerOffer(_, joker, _) -> xMultKeys.Contains joker.Key
+            | _ -> false
+
+        let choice =
+            if hunting then
+                evaluated
+                |> List.tryFind (fun e -> isXMult e && e.After / e.Before >= Shop.threshold owned e)
+                |> Option.orElse (Shop.choose owned evaluated)
+            else
+                Shop.choose owned evaluated
+
+        match choice with
         | Some e ->
             let others = evaluated |> List.filter (fun o -> Shop.position o.Offer <> Shop.position e.Offer)
             let candidates = e :: others |> List.truncate 5 |> List.map candidate
@@ -301,7 +329,7 @@ let private shopAction seq (g: Api.GameState) =
                     e.After
                     (percent e)
                     (thresholdText (offered e.Offer) (needed e))
-                    (lastNote + earlyNote)
+                    (lastNote + earlyNote + goalNote)
 
             BuyCard(Shop.position e.Offer), decision seq g candidates.Head.Action rule candidates None
         | None ->
@@ -364,14 +392,20 @@ let private shopAction seq (g: Api.GameState) =
                         None
                 else
                     let slotFree = build.Jokers.Length < build.Situation.JokerSlots
-                    let floor = interestFloor relaxed
-                    let celestial = cheapestPack g floor "p_celestial"
+                    let floor = if hunting && not relaxed then 10 else interestFloor relaxed
+                    let celestial = cheapestPack g (interestFloor relaxed) "p_celestial"
 
-                    let floorText =
+                    let capText =
                         if relaxed then
                             relaxedText
                         else
-                            sprintf "stays at or above the $%d interest cap" floor
+                            sprintf "stays at or above the $%d interest cap" (interestFloor relaxed)
+
+                    let floorText =
+                        if hunting && not relaxed then
+                            "stays at or above $10 while hunting for an X-Mult joker"
+                        else
+                            capText
 
                     match (if slotFree then cheapestPack g floor "p_buffoon" |> Option.orElse celestial else celestial) with
                     | Some(index, pack) ->
@@ -390,7 +424,7 @@ let private shopAction seq (g: Api.GameState) =
                                 kind
                                 (g.Money - pack.Cost.Buy)
                                 pack.Cost.Buy
-                                floorText)
+                                (if pack.Key.StartsWith "p_buffoon" then floorText + goalNote else capText))
                             []
                             None
                     | None when g.Money - g.Round.RerollCost >= floor && g.Round.RerollCost <= 7 ->
@@ -403,7 +437,7 @@ let private shopAction seq (g: Api.GameState) =
                                 "$%d left after the $%d reroll; %s; the reroll costs at most $7"
                                 (g.Money - g.Round.RerollCost)
                                 g.Round.RerollCost
-                                floorText)
+                                (floorText + goalNote))
                             []
                             None
                     | None ->

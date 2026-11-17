@@ -94,3 +94,50 @@ let ``decisions list the offers seen in the shop only`` () =
     let _, hand = play ()
     Assert.Empty hand.Seen
     Assert.DoesNotContain("seen:", Decision.toText hand)
+
+let private jokerCard (template: Api.Card) key cost =
+    { template with
+        Key = key
+        Label = key
+        Set = Api.CardSet.Joker
+        Cost = { Sell = cost / 2; Buy = cost } }
+
+let private huntShop ante owned =
+    let g = load "SHOP"
+    let t = g.Shop.Cards.Head
+
+    { g with
+        AnteNum = ante
+        Money = 20
+        Jokers = { g.Jokers with Cards = owned |> List.map (fun k -> jokerCard t k 4); Count = owned.Length }
+        Shop = { g.Shop with Cards = [ jokerCard t "j_stuntman" 7; jokerCard t "j_cavendish" 4 ] } }
+
+[<Fact>]
+let ``hunting buys an X-Mult joker over a bigger flat gain`` () =
+    let action, decision = Policy.decide 1 (huntShop 3 [])
+    Assert.Equal(Policy.BuyCard 1, action)
+    Assert.Contains("goal: find an X-Mult joker (none owned in ante 3)", decision.Rule)
+
+[<Fact>]
+let ``an owned X-Mult joker ends the hunt`` () =
+    let action, decision = Policy.decide 1 (huntShop 3 [ "j_cavendish" ])
+    Assert.Equal(Policy.BuyCard 0, action)
+    Assert.DoesNotContain("goal:", decision.Rule)
+
+[<Fact>]
+let ``hunting rerolls down to ten dollars only in antes 2 to 4`` () =
+    let empty ante =
+        let g = huntShop ante []
+        { g with
+            Shop = { g.Shop with Cards = [] }
+            Packs = { g.Packs with Cards = [] } }
+
+    let action, decision = Policy.decide 1 (empty 3)
+    Assert.Equal(Policy.Reroll, action)
+    Assert.Contains("stays at or above $10 while hunting for an X-Mult joker", decision.Rule)
+    Assert.NotEqual(Policy.Reroll, fst (Policy.decide 1 (empty 5)))
+
+    let g = empty 3
+    let celestial = { (load "SHOP").Packs.Cards.Head with Key = "p_celestial_normal_1"; Cost = { Sell = 2; Buy = 4 } }
+    let withPack = { g with Packs = { g.Packs with Cards = [ celestial ] } }
+    Assert.Equal(Policy.Reroll, fst (Policy.decide 1 withPack))
