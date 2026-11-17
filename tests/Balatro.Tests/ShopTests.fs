@@ -554,6 +554,17 @@ let ``a Popcorn offer is worth less than plain mult when it is about to run out`
     Assert.True(gain (popcorn 20.0) > gain plain)
 
 [<Fact>]
+let ``Ice Cream is valued over two antes, below its three round value`` () =
+    let e = evaluate 100 8 10 (build []) [ JokerOffer(0, iceCream 100.0, 5) ] |> List.exactlyOne
+
+    let threeRounds =
+        [ 0; 1; 2 ]
+        |> List.map (fun rounds -> roundScore 100 8 (revalue (decay (build [ iceCream 100.0 ]) rounds)))
+        |> List.average
+
+    Assert.True(e.After / e.Before < threeRounds / e.Before)
+
+[<Fact>]
 let ``a build without decaying jokers is scored as one round`` () =
     let owned = build [ joker "j_joker" ]
     let e = evaluate 100 8 10 owned [ jupiter 3 ] |> List.exactlyOne

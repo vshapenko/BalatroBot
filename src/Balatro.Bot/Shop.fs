@@ -220,7 +220,7 @@ let private horizon (seed: int) (samples: int) (build: Build) : float =
         let score0, rates = roundStats seed samples (revalue build)
 
         let later =
-            [ 1; 2 ]
+            [ 1 .. 5 ]
             |> List.map (fun rounds -> roundScore seed samples (revalue (grow rates rounds (decay build rounds))))
 
         score0 :: later |> List.average
