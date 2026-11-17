@@ -15,6 +15,7 @@ type Decision =
       Chosen: string
       Rule: string
       Candidates: Candidate list
+      Seen: string list
       Predicted: float option }
 
 type Outcome =
@@ -43,6 +44,7 @@ let toJson (d: Decision) : string =
     o.Add("chosen", str d.Chosen)
     o.Add("rule", str d.Rule)
     o.Add("candidates", JsonArray(d.Candidates |> List.map candidateJson |> Array.ofList))
+    o.Add("seen", JsonArray(d.Seen |> List.map str |> Array.ofList))
     o.Add("predicted", d.Predicted |> Option.map num |> Option.toObj)
     o.ToJsonString()
 
@@ -57,7 +59,10 @@ let toText (d: Decision) : string =
         | _ :: second :: _ -> sprintf "; next best %s (%.0f)" second.Action second.Value
         | _ -> ""
 
-    sprintf "#%d ante %d round %d %s: %s%s; rule: %s" d.Seq d.Ante d.Round d.Phase chosen next d.Rule
+    let seen =
+        if d.Seen.IsEmpty then "" else "; seen: " + String.concat ", " d.Seen
+
+    sprintf "#%d ante %d round %d %s: %s%s; rule: %s%s" d.Seq d.Ante d.Round d.Phase chosen next d.Rule seen
 
 let outcomeToJson (o: Outcome) : string =
     let j = JsonObject()

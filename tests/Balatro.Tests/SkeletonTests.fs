@@ -82,3 +82,15 @@ let ``blind select names the blind to select`` () =
     let action, decision = Policy.decide 1 boss
     Assert.Equal(Policy.SelectBlind, action)
     Assert.Equal("select The Hook (target 600): Discards 2 random cards per hand played", decision.Chosen)
+
+[<Fact>]
+let ``decisions list the offers seen in the shop only`` () =
+    let g = load "SHOP"
+    let first = g.Shop.Cards.Head
+    let _, shop = Policy.decide 1 g
+    Assert.NotEmpty shop.Seen
+    Assert.Equal(sprintf "%s $%d" first.Label first.Cost.Buy, shop.Seen.Head)
+    Assert.Contains("; seen: ", Decision.toText shop)
+    let _, hand = play ()
+    Assert.Empty hand.Seen
+    Assert.DoesNotContain("seen:", Decision.toText hand)

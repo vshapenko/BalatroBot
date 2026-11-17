@@ -32,6 +32,15 @@ let private describe (breakdown: Scoring.ScoreBreakdown) (played: Card list) =
     sprintf "play %s [%s]" (HandType.label breakdown.HandType) (played |> List.map symbol |> String.concat " ")
 
 let private decision seq (g: Api.GameState) chosen rule candidates predicted : Decision =
+    let seen =
+        match g.State with
+        | Api.State.Shop ->
+            [ g.Shop.Cards; g.Vouchers.Cards; g.Packs.Cards ]
+            |> List.concat
+            |> List.map (fun c -> sprintf "%s $%d" c.Label c.Cost.Buy)
+        | Api.State.SmodsBoosterOpened -> g.Pack.Cards |> List.map (fun c -> c.Label)
+        | _ -> []
+
     { Seq = seq
       Ante = g.AnteNum
       Round = g.RoundNum
@@ -39,6 +48,7 @@ let private decision seq (g: Api.GameState) chosen rule candidates predicted : D
       Chosen = chosen
       Rule = rule
       Candidates = candidates
+      Seen = seen
       Predicted = predicted }
 
 let private passive seq (g: Api.GameState) action chosen rule =
