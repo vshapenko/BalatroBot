@@ -143,10 +143,57 @@ let ``a bought joker and the money it costs change the build dependent values`` 
     Assert.Equal(roundScore 100 2 expected, evaluated.After)
     Assert.Equal(roundScore 100 2 (build [ { bull with Value = Some 20.0 } ] |> withSituation (fun s -> { s with Money = 10 })), evaluated.Before)
 
+let private discards n = withSituation (fun s -> { s with DiscardsLeft = n })
+
 [<Fact>]
-let ``the simulated round spends the discards before it plays`` () =
-    let discards = withSituation (fun s -> { s with DiscardsLeft = 4 })
-    Assert.Equal(roundScore 100 4 (discards (build [])), roundScore 100 4 (discards (build [ joker "j_banner" ])))
+let ``the simulated round discards when it raises the hand`` () =
+    Assert.True(roundScore 100 4 (discards 3 (build [])) > roundScore 100 4 (discards 0 (build [])))
+
+[<Fact>]
+let ``the simulated round shows the jokers the discards it has left`` () =
+    Assert.True(roundScore 100 4 (discards 4 (build [ joker "j_banner" ])) > roundScore 100 4 (discards 4 (build [])))
+
+[<Fact>]
+let ``the simulated round discards the other suits when it holds four of one`` () =
+    let dealt seed =
+        let cards = Array.ofList deck
+        Random(seed).Shuffle cards
+        cards
+
+    let fits (cards: Card[]) =
+        let hand = cards[0..7]
+        let held = hand |> Array.filter (fun c -> c.Suit = Hearts)
+        let others = hand |> Array.filter (fun c -> c.Suit <> Hearts)
+        let hearts first = cards[first .. first + 3] |> Array.exists (fun c -> c.Suit = Hearts)
+
+        held.Length = 4
+        && held |> Array.forall (fun c -> c.Rank >= Seven && c.Rank <> Ace)
+        && others |> Array.forall (fun c -> c.Rank <= Six)
+        && (others |> Array.distinctBy (fun c -> c.Rank)).Length = 4
+        && [ 8; 12; 16; 20 ] |> List.forall hearts
+        && cards[8..12] |> Array.filter (fun c -> c.Suit = Hearts) |> Array.length = 1
+        && cards[8..11] |> Array.exists (fun c -> c.Suit = Hearts)
+
+    let seed = 1243672
+    Assert.True(fits (dealt seed))
+
+    let flushes n =
+        let one = { (discards n (build [])) with Hands = 1 }
+        let plays = (snd (roundStats seed 1 one)).Plays
+        [ Flush; StraightFlush ] |> List.sumBy (fun t -> plays |> Map.tryFind t |> Option.defaultValue 0.0)
+
+    Assert.Equal(0.0, flushes 0)
+    Assert.Equal(1.0, flushes 1)
+
+[<Fact>]
+let ``a small hand's simulated round returns a score`` () =
+    let small = { build [] with HandSize = 4 }
+    Assert.True(roundScore 100 4 (discards 3 small) > 0.0)
+
+[<Fact>]
+let ``the simulated round returns when the discards use up the shuffle`` () =
+    let long = { build [] with Hands = 5 }
+    Assert.True(roundScore 428 1 (discards 8 long) > 0.0)
 
 [<Fact>]
 let ``the simulated round keeps its own play counts`` () =
@@ -236,8 +283,8 @@ let ``policy never buys the tarot in the fixture shop`` () =
 
     let rich = { g with Money = 26; Shop = { g.Shop with Cards = [ jupiter; earth ] } }
     let action, decision = Policy.decide 2 rich
-    Assert.Equal(Policy.BuyCard 1, action)
-    Assert.Equal("buy Earth for $1", decision.Chosen)
+    Assert.Equal(Policy.BuyCard 0, action)
+    Assert.Equal("buy Jupiter for $3", decision.Chosen)
     Assert.Equal(decision.Chosen, decision.Candidates.Head.Action)
 
 [<Fact>]

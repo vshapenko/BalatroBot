@@ -57,8 +57,65 @@ let private simulate (build: Build) (shuffle: Card[]) : float * (Card list * Sco
         let count = min (build.HandSize - kept.Length) (shuffle.Length - taken)
         kept @ List.ofArray shuffle[taken .. taken + count - 1], taken + count
 
-    let rec play (hand: Card list) taken handsLeft plays total hands =
-        if handsLeft = 0 then
+    let without (hand: Card list) drop =
+        hand |> List.indexed |> List.filter (fun (i, _) -> not (List.contains i drop)) |> List.map snd
+
+    let lowest (hand: Card list) positions =
+        positions |> List.sortBy (fun i -> Rank.id hand[i].Rank, i) |> List.truncate 5
+
+    // the redraw sample starts n cards past the next card while enough of the shuffle remains
+    let discard (hand: Card list) (best: Scoring.ScoreBreakdown) taken (input: Search.Input) =
+        let left = shuffle.Length - taken
+        let plain (c: Card) = { c with Enhancement = None }
+
+        let unscored =
+            hand
+            |> List.indexed
+            |> List.fold
+                (fun (drop, scoring) (i, c) ->
+                    match List.tryFindIndex ((=) (plain c)) scoring with
+                    | Some j -> drop, List.removeAt j scoring
+                    | None -> i :: drop, scoring)
+                ([], best.ScoringCards |> List.map plain)
+            |> fst
+            |> List.rev
+
+        let suit, count = hand |> List.countBy (fun c -> c.Suit) |> List.maxBy snd
+
+        let offsuit =
+            if count >= 3 && count < 5 then
+                [ for i, c in List.indexed hand do
+                      if c.Suit <> suit then
+                          yield i ]
+            else
+                []
+
+        let value drop =
+            let kept = without hand drop
+            let n = List.length drop
+            let fresh = [ for j in 0 .. n - 1 -> shuffle[taken + (n + j) % left] ]
+
+            let redrawn =
+                { input with
+                    Hand = List.indexed (kept @ fresh)
+                    DiscardsLeft = input.DiscardsLeft - 1 }
+
+            let _, _, b = (Search.plays redrawn).Head
+            b.Total
+
+        let candidates =
+            [ lowest hand unscored; lowest hand offsuit ]
+            |> List.filter (fun drop -> not drop.IsEmpty && drop.Length <= left)
+            |> List.distinctBy List.sort
+
+        match candidates with
+        | [] -> None
+        | _ ->
+            let drop, value = candidates |> List.map (fun drop -> drop, value drop) |> List.maxBy snd
+            if value > best.Total then Some drop else None
+
+    let rec play (hand: Card list) taken handsLeft discardsLeft plays total hands =
+        if handsLeft = 0 || hand.IsEmpty then
             total, List.rev hands
         else
             let input: Search.Input =
@@ -66,7 +123,7 @@ let private simulate (build: Build) (shuffle: Card[]) : float * (Card list * Sco
                   Deck = []
                   HandsLeft = handsLeft
                   HandSize = build.HandSize
-                  DiscardsLeft = 0
+                  DiscardsLeft = discardsLeft
                   Needed = 0.0
                   Score = score plays
                   Seed = 0
@@ -75,26 +132,26 @@ let private simulate (build: Build) (shuffle: Card[]) : float * (Card list * Sco
 
             let positions, played, best = (Search.plays input).Head
 
-            let kept =
-                hand
-                |> List.indexed
-                |> List.filter (fun (i, _) -> not (List.contains i positions))
-                |> List.map snd
+            match (if discardsLeft > 0 && taken < shuffle.Length then discard hand best taken input else None) with
+            | Some drop ->
+                let next, taken = draw (without hand drop) taken
+                play next taken handsLeft (discardsLeft - 1) plays total hands
+            | None ->
+                let next, taken = draw (without hand positions) taken
+                let run, round = plays |> Map.tryFind best.HandType |> Option.defaultValue (0, 0)
 
-            let next, taken = draw kept taken
-            let run, round = plays |> Map.tryFind best.HandType |> Option.defaultValue (0, 0)
-
-            play
-                next
-                taken
-                (handsLeft - 1)
-                (Map.add best.HandType (run + 1, round + 1) plays)
-                (total + best.Total)
-                ((played, best) :: hands)
+                play
+                    next
+                    taken
+                    (handsLeft - 1)
+                    discardsLeft
+                    (Map.add best.HandType (run + 1, round + 1) plays)
+                    (total + best.Total)
+                    ((played, best) :: hands)
 
     let hand, taken = draw [] 0
     let plays = build.Situation.HandPlays |> Map.map (fun _ (run, _) -> run, 0)
-    play hand taken build.Hands plays 0.0 []
+    play hand taken build.Hands build.Situation.DiscardsLeft plays 0.0 []
 
 let private rounds (seed: int) (samples: int) (build: Build) =
     Array.init samples (fun s ->
