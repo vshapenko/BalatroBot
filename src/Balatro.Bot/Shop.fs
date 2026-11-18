@@ -153,11 +153,26 @@ let private simulate (build: Build) (shuffle: Card[]) : float * (Card list * Sco
     let plays = build.Situation.HandPlays |> Map.map (fun _ (run, _) -> run, 0)
     play hand taken build.Hands build.Situation.DiscardsLeft plays 0.0 []
 
+let private simulated =
+    System.Collections.Concurrent.ConcurrentDictionary<int * int * Build, (float * (Card list * Scoring.ScoreBreakdown) list)[]>()
+
 let private rounds (seed: int) (samples: int) (build: Build) =
-    Array.init samples (fun s ->
-        let cards = Array.ofList build.Deck
-        Random(seed + s).Shuffle cards
-        simulate build cards)
+    let key = seed, samples, { build with Situation = { build.Situation with Money = 0 } }
+
+    match simulated.TryGetValue key with
+    | true, cached -> cached
+    | _ ->
+        let computed =
+            Array.init samples (fun s ->
+                let cards = Array.ofList build.Deck
+                Random(seed + s).Shuffle cards
+                simulate build cards)
+
+        if simulated.Count > 1000 then
+            simulated.Clear()
+
+        simulated[key] <- computed
+        computed
 
 let roundScore (seed: int) (samples: int) (build: Build) : float =
     rounds seed samples build |> Array.averageBy fst
@@ -367,11 +382,13 @@ let bestOrder (seed: int) (samples: int) (build: Build) : int list =
     if build.Jokers.Length > 5 then
         current
     else
+        let undiscarded = { build with Situation = { build.Situation with DiscardsLeft = 0 } }
+
         let scored =
             permutations current
             |> Array.ofList
             |> Array.Parallel.map (fun order ->
-                order, roundScore seed samples { build with Jokers = order |> List.map (fun i -> build.Jokers[i]) })
+                order, roundScore seed samples { undiscarded with Jokers = order |> List.map (fun i -> build.Jokers[i]) })
 
         let best = scored |> Array.reduce (fun best next -> if snd next > snd best then next else best)
         let currentScore = scored |> Array.find (fun (order, _) -> order = current) |> snd

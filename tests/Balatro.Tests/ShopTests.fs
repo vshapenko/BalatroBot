@@ -717,3 +717,24 @@ let ``a Runner offer is worth its growth on a deck that makes straights`` () =
     printfn "Runner offer After %f, round score with Runner %f" e.After flat
     Assert.Equal(20, low.Deck.Length)
     Assert.True(e.After > flat)
+
+[<Fact>]
+let ``round score is cached and ignores the money`` () =
+    let b = build [ joker "j_joker" ]
+    let first = roundScore 100 4 b
+    Assert.Equal(first, roundScore 100 4 b)
+    Assert.Equal(first, roundScore 100 4 (withSituation (fun s -> { s with Money = 77 }) b))
+
+[<Fact>]
+let ``policy decides the fixture shop the same way twice`` () =
+    let g = load "SHOP"
+    let first = Policy.decide 1 g
+    let second = Policy.decide 1 g
+    Assert.Equal(fst first, fst second)
+    Assert.Equal((snd first).Rule, (snd second).Rule)
+
+[<Fact>]
+let ``best order does not depend on the discards left`` () =
+    let jokers = [ joker "j_duo"; joker "j_jolly" ]
+    let withDiscards n = withSituation (fun s -> { s with DiscardsLeft = n }) (build jokers)
+    Assert.Equal<int list>(bestOrder 100 4 (withDiscards 0), bestOrder 100 4 (withDiscards 4))
