@@ -86,6 +86,14 @@ let private activeBoss (state: Api.GameState) : string option =
     | Some blinds when blinds.Boss.Status = Api.BlindStatus.Current && not chicot -> Some blinds.Boss.Name
     | _ -> None
 
+let upcomingBoss (state: Api.GameState) : string option =
+    let chicot = state.Jokers.Cards |> List.exists (fun c -> c.Key = "j_chicot" && not c.State.Debuff)
+
+    match state.Blinds with
+    | Some blinds when (blinds.Boss.Status = Api.BlindStatus.Upcoming || blinds.Boss.Status = Api.BlindStatus.Select) && not chicot ->
+        Some blinds.Boss.Name
+    | _ -> None
+
 let boss (state: Api.GameState) : Jokers.Boss option =
     match activeBoss state with
     | Some "The Psychic" -> Some Jokers.Psychic

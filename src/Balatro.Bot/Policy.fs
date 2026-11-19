@@ -235,11 +235,15 @@ let private shopAction seq (g: Api.GameState) =
 
         let owned = build.Jokers.Length
         let early = owned < 3
+        let boss = Mapping.upcomingBoss g |> Option.filter (fun name -> Shop.underBoss name build <> build)
 
         let behindScore =
             g.Blinds
             |> Option.filter (fun _ -> not early)
-            |> Option.map (fun b -> Shop.roundScore (shopSeed g) 20 (Shop.revalue build), float b.Boss.Score)
+            |> Option.map (fun b ->
+                let revalued = Shop.revalue build
+                let scored = boss |> Option.fold (fun built name -> Shop.underBoss name built) revalued
+                Shop.roundScore (shopSeed g) 20 scored, float b.Boss.Score)
             |> Option.filter (fun (score, target) -> score < 1.5 * target)
 
         let behind = behindScore.IsSome
@@ -275,12 +279,17 @@ let private shopAction seq (g: Api.GameState) =
             | _ -> "interest no longer matters in the last ante"
 
         let lastNote = if relaxed then "; " + relaxedText else ""
+        let bossNote =
+            boss
+            |> Option.map (sprintf "; valued against %s: mean of a normal round and the boss round")
+            |> Option.defaultValue ""
+
         let earlyNote = if early && not (lastAnte g) then "; fewer than 3 jokers owned: interest not counted" else ""
 
         let offered (offer: Shop.Offer) = g.Shop.Cards[Shop.position offer]
 
         let evaluated =
-            Shop.evaluate seed 20 g.Money build offers
+            Shop.evaluate seed 20 g.Money boss build offers
             |> List.map (fun e ->
                 { e with
                     InterestLost = (if relaxed || early then 0 else e.InterestLost) + stickerLoss (offered e.Offer) })
@@ -329,7 +338,7 @@ let private shopAction seq (g: Api.GameState) =
                     e.After
                     (percent e)
                     (thresholdText (offered e.Offer) (needed e))
-                    (lastNote + earlyNote + goalNote)
+                    (lastNote + earlyNote + goalNote + bossNote)
 
             BuyCard(Shop.position e.Offer), decision seq g candidates.Head.Action rule candidates None
         | None ->
@@ -469,6 +478,7 @@ let private shopAction seq (g: Api.GameState) =
                                     (offerName best.Offer)
                                     (percent best)
                                     (needed best)
+                                + bossNote
 
                             NextRound, decision seq g "next round" rule (evaluated |> List.truncate 5 |> List.map declined) None
 
@@ -484,7 +494,7 @@ let private packAction seq (g: Api.GameState) =
             | Api.CardSet.Planet -> planetHand c.Key |> Option.map (fun hand -> Shop.PlanetOffer(i, hand, c.Label, 0))
             | _ -> None)
 
-    match Shop.pickFromPack (shopSeed g) 20 build cards with
+    match Shop.pickFromPack (shopSeed g) 20 (Mapping.upcomingBoss g) build cards with
     | Some e ->
         let name = offerName e.Offer
 

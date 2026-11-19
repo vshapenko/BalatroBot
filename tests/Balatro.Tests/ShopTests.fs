@@ -79,20 +79,20 @@ let ``evaluate keeps affordable offers that do not lower the score`` () =
           jupiter 3
           JokerOffer(2, joker "j_joker", 11) ]
 
-    let evaluated = evaluate 100 4 10 (build []) offers
+    let evaluated = evaluate 100 4 10 None (build []) offers
     Assert.Equal<int list>([ 0; 1 ], evaluated |> List.map (fun e -> position e.Offer) |> List.sort)
     Assert.All(evaluated, fun e -> Assert.True(e.After >= e.Before))
 
 [<Fact>]
 let ``evaluate returns no joker offer when the joker slots are full`` () =
     let full = build (List.replicate 5 (joker "j_joker"))
-    let evaluated = evaluate 100 2 10 full [ JokerOffer(0, joker "j_jolly", 3); jupiter 3 ]
+    let evaluated = evaluate 100 2 10 None full [ JokerOffer(0, joker "j_jolly", 3); jupiter 3 ]
     Assert.Equal<int list>([ 1 ], evaluated |> List.map (fun e -> position e.Offer))
 
 [<Fact>]
 let ``interest lost is the interest the purchase costs`` () =
     let lost money cost =
-        (evaluate 100 1 money (build []) [ jupiter cost ]).Head.InterestLost
+        (evaluate 100 1 money None (build []) [ jupiter cost ]).Head.InterestLost
 
     Assert.Equal(1, lost 26 3)
     Assert.Equal(0, lost 30 3)
@@ -135,7 +135,7 @@ let ``a bought joker and the money it costs change the build dependent values`` 
     let bull = { joker "j_bull" with Value = Some 99.0 }
     let owned = withSituation (fun s -> { s with Money = 10 }) (build [ bull ])
     let offer = JokerOffer(0, joker "j_joker", 4)
-    let evaluated = (evaluate 100 2 10 owned [ offer ]).Head
+    let evaluated = (evaluate 100 2 10 None owned [ offer ]).Head
 
     let expected =
         withSituation (fun s -> { s with Money = 6 }) (build [ { bull with Value = Some 12.0 }; joker "j_joker" ])
@@ -222,7 +222,7 @@ let ``the simulated round pays Loyalty Card on the hand its counter reaches`` ()
 [<Fact>]
 let ``a fresh Loyalty Card is worth buying over the horizon`` () =
     let offer = JokerOffer(0, loyalty 5, 5)
-    let evaluated = evaluate 100 4 10 (build []) [ offer ] |> List.exactlyOne
+    let evaluated = evaluate 100 4 10 None (build []) [ offer ] |> List.exactlyOne
     Assert.True(evaluated.After > evaluated.Before)
 
 [<Fact>]
@@ -235,10 +235,10 @@ let ``a joker offer needs a free slot whatever its edition`` () =
     let negative = { joker "j_jolly" with Edition = Some Negative }
     let offers = [ JokerOffer(0, negative, 3); JokerOffer(1, joker "j_jolly", 3) ]
     let full = build (List.replicate 5 (joker "j_joker"))
-    Assert.Empty(evaluate 100 2 10 full offers)
+    Assert.Empty(evaluate 100 2 10 None full offers)
 
     let free = build (List.replicate 4 (joker "j_joker"))
-    Assert.Equal<int list>([ 0; 1 ], evaluate 100 2 10 free offers |> List.map (fun e -> position e.Offer) |> List.sort)
+    Assert.Equal<int list>([ 0; 1 ], evaluate 100 2 10 None free offers |> List.map (fun e -> position e.Offer) |> List.sort)
 
 [<Fact>]
 let ``a joker stencil is valued by the empty slots the build has`` () =
@@ -248,7 +248,7 @@ let ``a joker stencil is valued by the empty slots the build has`` () =
 
     let negative = { joker "j_jolly" with Edition = Some Negative }
     let owned = build (stencil :: List.replicate 3 (joker "j_joker"))
-    let evaluated = (evaluate 100 2 10 owned [ JokerOffer(0, negative, 3) ]).Head
+    let evaluated = (evaluate 100 2 10 None owned [ JokerOffer(0, negative, 3) ]).Head
 
     // 6 slots - 5 jokers + 1 Stencil
     let expected =
@@ -376,15 +376,15 @@ let ``pick from pack takes the planet that raises the score most`` () =
     let ranks = [ Two; Three; Four; Five; Six; Seven; Eight; Nine; Ten; Jack; Queen; King; Ace ]
     let flushes = { build [] with Deck = [ for rank in ranks -> card rank Spades ] }
     let pack = [ PlanetOffer(0, Pair, "Mercury", 0); PlanetOffer(1, Flush, "Jupiter", 0) ]
-    Assert.Equal(1, position (pickFromPack 100 4 flushes pack).Value.Offer)
+    Assert.Equal(1, position (pickFromPack 100 4 None flushes pack).Value.Offer)
 
 [<Fact>]
 let ``pick from pack skips a joker with full slots and cards that change nothing`` () =
     let full = build (List.replicate 5 (joker "j_joker"))
-    Assert.Equal(None, pickFromPack 100 2 full [ JokerOffer(0, joker "j_duo", 0) ])
+    Assert.Equal(None, pickFromPack 100 2 None full [ JokerOffer(0, joker "j_duo", 0) ])
 
     let repeating = { build [] with Deck = aces }
-    Assert.Equal(None, pickFromPack 100 2 repeating [ PlanetOffer(0, Pair, "Mercury", 0) ])
+    Assert.Equal(None, pickFromPack 100 2 None repeating [ PlanetOffer(0, Pair, "Mercury", 0) ])
 
 [<Fact>]
 let ``the shop seed is fixed within a visit and differs between rounds`` () =
@@ -611,7 +611,7 @@ let ``decay stops Ice Cream at zero`` () =
 [<Fact>]
 let ``a Popcorn offer is worth less than plain mult when it is about to run out`` () =
     let gain offered =
-        let e = evaluate 100 8 10 (build []) [ JokerOffer(0, offered, 5) ] |> List.exactlyOne
+        let e = evaluate 100 8 10 None (build []) [ JokerOffer(0, offered, 5) ] |> List.exactlyOne
         e.After / e.Before
 
     let plain = { joker "j_joker" with Value = Some 4.0 }
@@ -620,7 +620,7 @@ let ``a Popcorn offer is worth less than plain mult when it is about to run out`
 
 [<Fact>]
 let ``Ice Cream is valued over two antes, below its three round value`` () =
-    let e = evaluate 100 8 10 (build []) [ JokerOffer(0, iceCream 100.0, 5) ] |> List.exactlyOne
+    let e = evaluate 100 8 10 None (build []) [ JokerOffer(0, iceCream 100.0, 5) ] |> List.exactlyOne
 
     let threeRounds =
         [ 0; 1; 2 ]
@@ -632,7 +632,7 @@ let ``Ice Cream is valued over two antes, below its three round value`` () =
 [<Fact>]
 let ``a build without decaying jokers is scored as one round`` () =
     let owned = build [ joker "j_joker" ]
-    let e = evaluate 100 8 10 owned [ jupiter 3 ] |> List.exactlyOne
+    let e = evaluate 100 8 10 None owned [ jupiter 3 ] |> List.exactlyOne
     Assert.Equal(roundScore 100 8 (revalue owned), e.Before)
 
 [<Fact>]
@@ -666,7 +666,10 @@ let ``a declined shop visit lists the offers and names the best one`` () =
     Assert.Equal(1, decision.Candidates.Length)
     Assert.Equal("buy Egg for $1", decision.Candidates.Head.Action)
     Assert.StartsWith("best offer Egg raises the simulated round score by ", decision.Rule)
-    Assert.EndsWith("below the 2% threshold", decision.Rule)
+    Assert.EndsWith(
+        "below the 2% threshold; valued against The Hook: mean of a normal round and the boss round",
+        decision.Rule
+    )
 
 let private rates =
     { Straights = 2.0
@@ -712,7 +715,7 @@ let ``round stats start with the round score and count the hands played`` () =
 let ``a Runner offer is worth its growth on a deck that makes straights`` () =
     let low = { build [] with Deck = deck |> List.filter (fun c -> c.Rank <= Six) }
     let runner = joker "j_runner"
-    let e = evaluate 100 8 10 low [ JokerOffer(0, runner, 5) ] |> List.exactlyOne
+    let e = evaluate 100 8 10 None low [ JokerOffer(0, runner, 5) ] |> List.exactlyOne
     let flat = roundScore 100 8 (revalue { low with Jokers = [ runner ] })
     printfn "Runner offer After %f, round score with Runner %f" e.After flat
     Assert.Equal(20, low.Deck.Length)
@@ -738,3 +741,44 @@ let ``best order does not depend on the discards left`` () =
     let jokers = [ joker "j_duo"; joker "j_jolly" ]
     let withDiscards n = withSituation (fun s -> { s with DiscardsLeft = n }) (build jokers)
     Assert.Equal<int list>(bestOrder 100 4 (withDiscards 0), bestOrder 100 4 (withDiscards 4))
+
+let private clubsAndHearts = deck |> List.filter (fun c -> c.Suit = Clubs || c.Suit = Hearts)
+
+[<Fact>]
+let ``under The Club exactly the clubs are debuffed and a club-heavy build scores less`` () =
+    let heavy = { build [ joker "j_joker" ] with Deck = clubsAndHearts }
+    let under = underBoss "The Club" heavy
+    Assert.All(under.Deck, fun c -> Assert.Equal(c.Suit = Clubs, c.Debuffed))
+    let normal = roundScore 100 4 heavy
+    let boss = roundScore 100 4 under
+    printfn "club-heavy round score %f, under The Club %f" normal boss
+    Assert.True(boss < normal)
+
+[<Fact>]
+let ``The Water takes the discards, The Needle leaves one hand and The Manacle one card less`` () =
+    let discarding = withSituation (fun s -> { s with DiscardsLeft = 3 }) (build [])
+    Assert.Equal(0, (underBoss "The Water" discarding).Situation.DiscardsLeft)
+    let needle = underBoss "The Needle" discarding
+    Assert.Equal(1, needle.Hands)
+    let _, rates = roundStats 100 4 needle
+    Assert.Equal(1.0, rates.Plays |> Map.toList |> List.sumBy snd)
+    Assert.Equal(discarding.HandSize - 1, (underBoss "The Manacle" discarding).HandSize)
+    Assert.Equal(discarding, underBoss "The Wall" discarding)
+
+[<Fact>]
+let ``an upcoming The Club lowers a Gluttonous Joker offer against a plain mult joker`` () =
+    let offers = [ JokerOffer(0, joker "j_gluttenous_joker", 5); JokerOffer(1, joker "j_joker", 5) ]
+
+    let relative boss =
+        let afters = evaluate 100 8 10 boss (build []) offers |> List.map (fun e -> position e.Offer, e.After) |> Map.ofList
+        afters[0] / afters[1]
+
+    let plain = relative None
+    let club = relative (Some "The Club")
+    printfn "Gluttonous / Joker after-value: %f without a boss, %f against The Club" plain club
+    Assert.True(club < plain)
+
+[<Fact>]
+let ``an unmodelled boss values offers like no boss`` () =
+    let offers = [ JokerOffer(0, joker "j_joker", 5) ]
+    Assert.Equal<Evaluated list>(evaluate 100 4 10 None (build []) offers, evaluate 100 4 10 (Some "The Wall") (build []) offers)

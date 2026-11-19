@@ -277,3 +277,11 @@ let ``The Hook scores the mean over the three single-card-left cases with Raised
 [<Fact>]
 let ``The Hook is read from the current boss blind`` () =
     Assert.Equal(Some Hook, Mapping.boss (load "SELECTING_HAND" |> withBoss "The Hook"))
+
+[<Fact>]
+let ``the upcoming boss is read from the shop and gone once defeated`` () =
+    let shop = load "SHOP"
+    Assert.Equal(Some "The Hook", Mapping.upcomingBoss shop)
+    let blinds = shop.Blinds.Value
+    let defeated = { shop with Blinds = Some { blinds with Boss = { blinds.Boss with Status = Api.BlindStatus.Defeated } } }
+    Assert.Equal(None, Mapping.upcomingBoss defeated)

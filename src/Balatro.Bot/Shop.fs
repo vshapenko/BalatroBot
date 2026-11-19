@@ -319,6 +319,24 @@ let private horizon (seed: int) (samples: int) (build: Build) : float =
     else
         roundScore seed samples (revalue build)
 
+let underBoss (boss: string) (build: Build) : Build =
+    let debuff keep = { build with Deck = build.Deck |> List.map (fun card -> if keep card then { card with Debuffed = true } else card) }
+
+    match boss with
+    | "The Club" -> debuff (fun card -> card.Suit = Clubs)
+    | "The Goad" -> debuff (fun card -> card.Suit = Spades)
+    | "The Window" -> debuff (fun card -> card.Suit = Diamonds)
+    | "The Head" -> debuff (fun card -> card.Suit = Hearts)
+    | "The Plant" -> debuff (fun card -> card.Rank = Jack || card.Rank = Queen || card.Rank = King)
+    | "The Water" -> { build with Situation = { build.Situation with DiscardsLeft = 0 } }
+    | "The Needle" -> { build with Hands = 1 }
+    | "The Manacle" -> { build with HandSize = build.HandSize - 1 }
+    | "The Psychic" -> { build with Situation = { build.Situation with Boss = Some Jokers.Psychic } }
+    | "The Eye" -> { build with Situation = { build.Situation with Boss = Some Jokers.Eye } }
+    | "The Mouth" -> { build with Situation = { build.Situation with Boss = Some Jokers.Mouth } }
+    | "The Hook" -> { build with Situation = { build.Situation with Boss = Some Jokers.Hook } }
+    | _ -> build
+
 let private apply (build: Build) offer =
     let paid = { build.Situation with Money = build.Situation.Money - cost offer }
 
@@ -345,9 +363,18 @@ let private apply (build: Build) offer =
                 Situation = paid }
     )
 
-let evaluate (seed: int) (samples: int) (money: int) (build: Build) (offers: Offer list) : Evaluated list =
+let evaluate (seed: int) (samples: int) (money: int) (boss: string option) (build: Build) (offers: Offer list) : Evaluated list =
     let current = revalue build
-    let before = horizon seed samples current
+    let boss = boss |> Option.filter (fun name -> underBoss name build <> build)
+
+    let value (build: Build) =
+        let normal = horizon seed samples build
+
+        match boss with
+        | Some name -> (normal + roundScore seed samples (underBoss name build)) / 2.0
+        | None -> normal
+
+    let before = value current
 
     offers
     |> List.filter (fun offer ->
@@ -358,7 +385,7 @@ let evaluate (seed: int) (samples: int) (money: int) (build: Build) (offers: Off
     |> List.map (fun offer ->
         { Offer = offer
           Before = before
-          After = horizon seed samples (apply current offer)
+          After = value (apply current offer)
           InterestLost = interest money - interest (money - cost offer) })
     |> List.sortBy (fun e -> -(e.After / e.Before), cost e.Offer, position e.Offer)
 
@@ -438,7 +465,7 @@ let upgrades (seed: int) (samples: int) (money: int) (build: Build) (offers: Off
 let chooseUpgrade (upgrades: Upgrade list) : Upgrade option =
     upgrades |> List.tryFind (fun u -> u.After / u.Before >= max 1.15 u.Threshold)
 
-let pickFromPack (seed: int) (samples: int) (build: Build) (cards: Offer list) : Evaluated option =
-    evaluate seed samples 0 build cards
+let pickFromPack (seed: int) (samples: int) (boss: string option) (build: Build) (cards: Offer list) : Evaluated option =
+    evaluate seed samples 0 boss build cards
     |> List.tryHead
     |> Option.filter (fun e -> e.After > e.Before)
