@@ -257,6 +257,10 @@ let private shopAction seq (g: Api.GameState) =
         let goalNote =
             if hunting then sprintf "; goal: find an X-Mult joker (none owned in ante %d)" g.AnteNum else ""
 
+        let seed = shopSeed g
+        let plan = Plan.make seed build
+        let planText = "; " + Plan.text plan
+
         let offers =
             g.Shop.Cards
             |> List.indexed
@@ -264,10 +268,10 @@ let private shopAction seq (g: Api.GameState) =
                 match c.Set with
                 | Api.CardSet.Joker -> Some(Shop.JokerOffer(i, Mapping.joker c, c.Cost.Buy))
                 | Api.CardSet.Planet when g.Consumables.Count < g.Consumables.Limit ->
-                    planetHand c.Key |> Option.map (fun hand -> Shop.PlanetOffer(i, hand, c.Label, c.Cost.Buy))
+                    planetHand c.Key
+                    |> Option.filter ((=) plan.Hand)
+                    |> Option.map (fun hand -> Shop.PlanetOffer(i, hand, c.Label, c.Cost.Buy))
                 | _ -> None)
-
-        let seed = shopSeed g
 
         let relaxedText =
             match behindScore with
@@ -338,7 +342,7 @@ let private shopAction seq (g: Api.GameState) =
                     e.After
                     (percent e)
                     (thresholdText (offered e.Offer) (needed e))
-                    (lastNote + earlyNote + goalNote + bossNote)
+                    (lastNote + earlyNote + goalNote + bossNote + planText)
 
             BuyCard(Shop.position e.Offer), decision seq g candidates.Head.Action rule candidates None
         | None ->
@@ -377,7 +381,7 @@ let private shopAction seq (g: Api.GameState) =
                         ((u.After / u.Before - 1.0) * 100.0)
                         u.Net
                         (thresholdText (offered u.Offer) (((max 1.15 u.Threshold) - 1.0) * 100.0))
-                        lastNote
+                        (lastNote + planText)
 
                 let candidates = upgrades |> List.truncate 5 |> List.map candidate
                 SellJoker u.Sell, decision seq g (sprintf "sell %s to buy %s" sold.Name bought) rule candidates None
@@ -394,9 +398,10 @@ let private shopAction seq (g: Api.GameState) =
                         g
                         (sprintf "reorder jokers to [%s]" names)
                         (sprintf
-                            "reordering raises the simulated round score from %.0f to %.0f"
+                            "reordering raises the simulated round score from %.0f to %.0f%s"
                             (score [ 0 .. build.Jokers.Length - 1 ])
-                            (score order))
+                            (score order)
+                            planText)
                         []
                         None
                 else
@@ -429,11 +434,12 @@ let private shopAction seq (g: Api.GameState) =
                             g
                             (sprintf "buy %s for $%d" pack.Label pack.Cost.Buy)
                             (sprintf
-                                "%s; $%d left after the $%d pack; %s"
+                                "%s; $%d left after the $%d pack; %s%s"
                                 kind
                                 (g.Money - pack.Cost.Buy)
                                 pack.Cost.Buy
-                                (if pack.Key.StartsWith "p_buffoon" then floorText + goalNote else capText))
+                                (if pack.Key.StartsWith "p_buffoon" then floorText + goalNote else capText)
+                                planText)
                             []
                             None
                     | None when g.Money - g.Round.RerollCost >= floor && g.Round.RerollCost <= 7 ->
@@ -443,10 +449,11 @@ let private shopAction seq (g: Api.GameState) =
                             g
                             (sprintf "reroll the shop for $%d" g.Round.RerollCost)
                             (sprintf
-                                "$%d left after the $%d reroll; %s; the reroll costs at most $7"
+                                "$%d left after the $%d reroll; %s; the reroll costs at most $7%s"
                                 (g.Money - g.Round.RerollCost)
                                 g.Round.RerollCost
-                                (floorText + goalNote))
+                                (floorText + goalNote)
+                                planText)
                             []
                             None
                     | None ->
@@ -454,7 +461,7 @@ let private shopAction seq (g: Api.GameState) =
                         | [] ->
                             let slotsFull = offers |> List.exists (function Shop.JokerOffer(_, _, cost) -> cost <= g.Money | _ -> false)
                             let rule = if slotsFull then "joker slots are full" else "nothing affordable in the shop"
-                            passive seq g NextRound "next round" rule
+                            passive seq g NextRound "next round" (rule + planText)
                         | best :: _ ->
                             let declined (e: Shop.Evaluated) : Candidate =
                                 let name = offerName e.Offer
@@ -479,6 +486,7 @@ let private shopAction seq (g: Api.GameState) =
                                     (percent best)
                                     (needed best)
                                 + bossNote
+                                + planText
 
                             NextRound, decision seq g "next round" rule (evaluated |> List.truncate 5 |> List.map declined) None
 

@@ -257,6 +257,8 @@ let ``a joker stencil is valued by the empty slots the build has`` () =
 
     Assert.Equal(roundScore 100 2 expected, evaluated.After)
 
+let private fixturePlan = "plan: Flush in Spades (34% of simulated plays)"
+
 [<Fact>]
 let ``policy never buys the tarot in the fixture shop`` () =
     let text = File.ReadAllText(AppContext.BaseDirectory + "fixtures/gamestate.SHOP.json")
@@ -306,7 +308,7 @@ let ``policy passes the shop with full joker slots and says so`` () =
             Shop = { g.Shop with Cards = [ plain ] } }
 
     match Policy.decide 1 full with
-    | Policy.NextRound, decision -> Assert.Equal("joker slots are full", decision.Rule)
+    | Policy.NextRound, decision -> Assert.Equal("joker slots are full; " + fixturePlan, decision.Rule)
     | Policy.ReorderJokers _, _ -> ()
     | other, _ -> failwithf "unexpected %A" other
 
@@ -667,7 +669,7 @@ let ``a declined shop visit lists the offers and names the best one`` () =
     Assert.Equal("buy Egg for $1", decision.Candidates.Head.Action)
     Assert.StartsWith("best offer Egg raises the simulated round score by ", decision.Rule)
     Assert.EndsWith(
-        "below the 2% threshold; valued against The Hook: mean of a normal round and the boss round",
+        "below the 2% threshold; valued against The Hook: mean of a normal round and the boss round; " + fixturePlan,
         decision.Rule
     )
 
@@ -782,3 +784,21 @@ let ``an upcoming The Club lowers a Gluttonous Joker offer against a plain mult 
 let ``an unmodelled boss values offers like no boss`` () =
     let offers = [ JokerOffer(0, joker "j_joker", 5) ]
     Assert.Equal<Evaluated list>(evaluate 100 4 10 None (build []) offers, evaluate 100 4 10 (Some "The Wall") (build []) offers)
+
+[<Fact>]
+let ``the shop drops planets for other hands and ends its rule with the plan`` () =
+    let g = load "SHOP"
+    let jupiter = g.Shop.Cards[1]
+
+    let earth =
+        { jupiter with
+            Key = "c_earth"
+            Label = "Earth"
+            Cost = { jupiter.Cost with Buy = 1 } }
+
+    let rich = { g with Money = 26; Shop = { g.Shop with Cards = [ jupiter; earth ] } }
+    let action, decision = Policy.decide 2 rich
+    Assert.Equal(Policy.BuyCard 0, action)
+    Assert.Equal(1, decision.Candidates.Length)
+    Assert.True(decision.Candidates |> List.forall (fun c -> not (c.Action.Contains "Earth")))
+    Assert.EndsWith("; " + fixturePlan, decision.Rule)
