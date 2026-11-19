@@ -13,6 +13,7 @@
     <Compile Include="JokersCard.fs" />
     <Compile Include="JokersCounter.fs" />
     <Compile Include="JokerRegistry.fs" />
+    <Compile Include="JokerProfiles.fs" />
     <Compile Include="Scoring.fs" />
     <Compile Include="Blinds.fs" />
   </ItemGroup>
