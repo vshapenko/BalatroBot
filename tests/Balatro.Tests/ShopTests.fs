@@ -923,3 +923,37 @@ let ``policy uses a held tarot in the hand when the simulation says the deck imp
 
     let plain = fst (Policy.decide 1 { held with Consumables = g.Consumables })
     Assert.NotEqual(action, plain)
+
+let private appended (b: Build) joker price =
+    revalue
+        { b with
+            Jokers = b.Jokers @ [ joker ]
+            Situation = { b.Situation with Money = b.Situation.Money - price } }
+
+[<Fact>]
+let ``a Blueprint offer is valued at the slot where it copies the best joker`` () =
+    let b = withSituation (fun s -> { s with Money = 10 }) (build [ joker "j_joker" ])
+    let blueprint = joker "j_blueprint"
+    let found = evaluate 100 4 10 None b [ JokerOffer(0, blueprint, 10) ] |> List.exactlyOne
+    let atEnd = roundScore 100 4 (appended b blueprint 10)
+    Assert.True(found.After > found.Before)
+    Assert.True(found.After > atEnd)
+
+[<Fact>]
+let ``a Blueprint swap is valued at the slot where it copies the best joker`` () =
+    let owned = { joker "j_joker" with SellValue = 2 }
+    let full = withSituation (fun s -> { s with Money = 10 }) (build (owned :: List.replicate 4 (joker "j_jolly")))
+    let blueprint = joker "j_blueprint"
+    let found = upgrades 100 4 10 full [ JokerOffer(0, blueprint, 10) ] |> List.find (fun u -> u.Sell = 4)
+    let kept = revalue { full with Jokers = List.removeAt 4 full.Jokers }
+    let atEnd = roundScore 100 4 (appended kept blueprint 10)
+    let atFront = roundScore 100 4 (revalue { kept with Jokers = blueprint :: kept.Jokers })
+    Assert.True(found.After >= atFront)
+    Assert.True(found.After > atEnd)
+
+[<Fact>]
+let ``a joker offer other than Blueprint is valued appended at the right end`` () =
+    let b = withSituation (fun s -> { s with Money = 10 }) (build [ joker "j_joker" ])
+    let duo = joker "j_duo"
+    let found = evaluate 100 4 10 None b [ JokerOffer(0, duo, 8) ] |> List.exactlyOne
+    Assert.Equal(roundScore 100 4 (appended b duo 8), found.After)

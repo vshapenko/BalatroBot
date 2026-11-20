@@ -367,6 +367,17 @@ let private apply (build: Build) offer =
         | TarotOffer(_, _, _, deck) -> { build with Deck = deck; Situation = paid }
     )
 
+let private placed (value: Build -> float) (build: Build) offer =
+    match offer with
+    | JokerOffer(_, joker, _) when joker.Key = "j_blueprint" ->
+        let bought = apply build offer
+        let rest = List.take (bought.Jokers.Length - 1) bought.Jokers
+
+        [ 0 .. rest.Length ]
+        |> List.map (fun i -> value (revalue { bought with Jokers = List.insertAt i joker rest }))
+        |> List.max
+    | _ -> value (apply build offer)
+
 let evaluate (seed: int) (samples: int) (money: int) (boss: string option) (build: Build) (offers: Offer list) : Evaluated list =
     let current = revalue build
     let boss = boss |> Option.filter (fun name -> underBoss name build <> build)
@@ -390,7 +401,7 @@ let evaluate (seed: int) (samples: int) (money: int) (boss: string option) (buil
     |> List.map (fun offer ->
         { Offer = offer
           Before = before
-          After = value (apply current offer)
+          After = placed value current offer
           InterestLost = interest money - interest (money - cost offer) })
     |> List.sortBy (fun e -> -(e.After / e.Before), cost e.Offer, position e.Offer)
 
@@ -461,7 +472,7 @@ let upgrades (seed: int) (samples: int) (money: int) (build: Build) (offers: Off
                               { Sell = sell
                                 Offer = offer
                                 Before = before
-                                After = horizon seed samples (apply sold offer)
+                                After = placed (horizon seed samples) sold offer
                                 Net = net
                                 Threshold = 1.05 + 0.05 * float (interest held - interest (held - price)) }
               | PlanetOffer _
