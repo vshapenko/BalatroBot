@@ -802,3 +802,26 @@ let ``the shop drops planets for other hands and ends its rule with the plan`` (
     Assert.Equal(1, decision.Candidates.Length)
     Assert.True(decision.Candidates |> List.forall (fun c -> not (c.Action.Contains "Earth")))
     Assert.EndsWith("; " + fixturePlan, decision.Rule)
+
+[<Fact>]
+let ``a free joker slot keeps 6 dollars from the plan planet`` () =
+    let g = load "SHOP"
+    let free = { g with Jokers = { g.Jokers with Cards = []; Count = 0 } }
+    let jupiter = g.Shop.Cards[1]
+    let shop = { g.Shop with Cards = [ jupiter ] }
+    let cost = jupiter.Cost.Buy
+
+    let poor = { free with Money = cost + 5; Shop = shop }
+    let action, decision = Policy.decide 2 poor
+    Assert.NotEqual(Policy.BuyCard 0, action)
+    Assert.Empty decision.Candidates
+    Assert.Contains("Jupiter skipped: keeps $6 for a joker while a slot is free", decision.Rule)
+
+    let enough = { free with Money = cost + 6; Shop = shop }
+    let action, decision = Policy.decide 2 enough
+    Assert.DoesNotContain("skipped", decision.Rule)
+    Assert.Equal(Policy.BuyCard 0, action)
+
+    let broke = { free with Money = cost - 1; Shop = shop }
+    let _, decision = Policy.decide 2 broke
+    Assert.DoesNotContain("skipped", decision.Rule)

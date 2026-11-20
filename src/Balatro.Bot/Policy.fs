@@ -259,7 +259,23 @@ let private shopAction seq (g: Api.GameState) =
 
         let seed = shopSeed g
         let plan = Plan.make seed build
-        let planText = "; " + Plan.text plan
+        let slotFree = build.Jokers.Length < build.Situation.JokerSlots
+        let reserved (c: Api.Card) = slotFree && g.Money >= c.Cost.Buy && g.Money - c.Cost.Buy < 6
+
+        let skipped =
+            g.Shop.Cards
+            |> List.tryFind (fun c ->
+                c.Set = Api.CardSet.Planet
+                && g.Consumables.Count < g.Consumables.Limit
+                && planetHand c.Key = Some plan.Hand
+                && reserved c)
+
+        let skipNote =
+            skipped
+            |> Option.map (fun c -> sprintf "; %s skipped: keeps $6 for a joker while a slot is free" c.Label)
+            |> Option.defaultValue ""
+
+        let planText = skipNote + "; " + Plan.text plan
 
         let offers =
             g.Shop.Cards
@@ -270,6 +286,7 @@ let private shopAction seq (g: Api.GameState) =
                 | Api.CardSet.Planet when g.Consumables.Count < g.Consumables.Limit ->
                     planetHand c.Key
                     |> Option.filter ((=) plan.Hand)
+                    |> Option.filter (fun _ -> not (reserved c))
                     |> Option.map (fun hand -> Shop.PlanetOffer(i, hand, c.Label, c.Cost.Buy))
                 | _ -> None)
 
@@ -405,7 +422,6 @@ let private shopAction seq (g: Api.GameState) =
                         []
                         None
                 else
-                    let slotFree = build.Jokers.Length < build.Situation.JokerSlots
                     let floor = if hunting && not relaxed then 10 else interestFloor relaxed
                     let celestial = cheapestPack g (interestFloor relaxed) "p_celestial"
 
