@@ -486,6 +486,15 @@ let private shopAction seq (g: Api.GameState) =
                         else
                             capText
 
+                    let swapOnly = not slotFree && behind && not (lastAnte g)
+                    let rerollFloor = if swapOnly then 10 else floor
+
+                    let rerollFloorText =
+                        if swapOnly then
+                            "stays at or above $10 for a sell-to-buy while the joker slots are full"
+                        else
+                            floorText
+
                     match (if slotFree then cheapestPack g floor "p_buffoon" |> Option.orElse celestial else celestial) with
                     | Some(index, pack) ->
                         let kind =
@@ -507,7 +516,7 @@ let private shopAction seq (g: Api.GameState) =
                                 planText)
                             []
                             None
-                    | None when g.Money - g.Round.RerollCost >= floor && g.Round.RerollCost <= 7 ->
+                    | None when g.Money - g.Round.RerollCost >= rerollFloor && g.Round.RerollCost <= 7 ->
                         Reroll,
                         decision
                             seq
@@ -517,7 +526,7 @@ let private shopAction seq (g: Api.GameState) =
                                 "$%d left after the $%d reroll; %s; the reroll costs at most $7%s"
                                 (g.Money - g.Round.RerollCost)
                                 g.Round.RerollCost
-                                (floorText + goalNote)
+                                (rerollFloorText + goalNote)
                                 planText)
                             []
                             None

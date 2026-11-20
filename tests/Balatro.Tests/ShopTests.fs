@@ -573,6 +573,26 @@ let ``interest no longer matters when the build is behind the boss`` () =
     Assert.DoesNotContain("behind", decision.Rule)
 
 [<Fact>]
+let ``a behind build with full joker slots keeps ten dollars when rerolling`` () =
+    let g = load "SHOP"
+    let plain = { g.Shop.Cards[1] with Set = Api.CardSet.Joker; Key = "j_joker"; Label = "Joker" }
+
+    let behindWith count money =
+        let owned = { g.Jokers with Count = count; Limit = 5; Cards = [ for i in 1..count -> { plain with Id = 100 + i } ] }
+        let blinds = g.Blinds.Value
+        let boss = { blinds with Boss = { blinds.Boss with Score = 10_000_000 } }
+        let shop = tarotShop (withoutPacks { g with AnteNum = 3; Jokers = owned; Blinds = Some boss }) 0
+        { shop with Money = money + shop.Round.RerollCost }
+
+    Assert.NotEqual(Policy.Reroll, fst (Policy.decide 1 (behindWith 5 9)))
+
+    let action, decision = Policy.decide 1 (behindWith 5 10)
+    Assert.Equal(Policy.Reroll, action)
+    Assert.Contains("stays at or above $10 for a sell-to-buy while the joker slots are full", decision.Rule)
+
+    Assert.Equal(Policy.Reroll, fst (Policy.decide 1 (behindWith 4 2)))
+
+[<Fact>]
 let ``the runner waits while every hand card is still debuffed`` () =
     let all = verdantLeaf true []
     Assert.True(Runner.allHandDebuffed all)
