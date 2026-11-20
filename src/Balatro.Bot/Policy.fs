@@ -12,6 +12,7 @@ type Action =
     | NextRound
     | BuyCard of int
     | UsePlanet of int
+    | UseTarot of int * int list
     | ReorderJokers of int list
     | SkipPack
     | SellJoker of int
@@ -137,7 +138,8 @@ let private planetHand key =
 let private offerName offer =
     match offer with
     | Shop.JokerOffer(_, joker, _) -> joker.Name
-    | Shop.PlanetOffer(_, _, name, _) -> name
+    | Shop.PlanetOffer(_, _, name, _)
+    | Shop.TarotOffer(_, name, _, _) -> name
 
 let shopSeed (g: Api.GameState) = (g.AnteNum * 100 + g.RoundNum) * 100
 
@@ -225,12 +227,48 @@ let private xMultKeys =
           "j_triboulet"; "j_ancient"; "j_idol"; "j_loyalty_card"; "j_ramen"; "j_baseball"; "j_obelisk"
           "j_constellation"; "j_madness" ]
 
+let private moneyGain (g: Api.GameState) (key: string) (spent: int) =
+    match key with
+    | "c_hermit" -> min (g.Money - spent) 20
+    | _ -> min (g.Jokers.Cards |> List.sumBy (fun c -> c.Cost.Sell)) 50
+
+let private moneyBuy (g: Api.GameState) =
+    if g.Consumables.Count < g.Consumables.Limit then
+        g.Shop.Cards
+        |> List.indexed
+        |> List.tryPick (fun (i, c) ->
+            let gain = moneyGain g c.Key c.Cost.Buy
+
+            if c.Set = Api.CardSet.Tarot && Tarot.effect c.Key = Some Tarot.Money && g.Money >= c.Cost.Buy && gain >= 5 then
+                Some(i, c, gain)
+            else
+                None)
+    else
+        None
+
 let private shopAction seq (g: Api.GameState) =
-    match g.Consumables.Cards |> List.tryFindIndex (fun c -> c.Set = Api.CardSet.Planet) with
-    | Some index ->
-        let name = g.Consumables.Cards[index].Label
-        UsePlanet index, decision seq g ("use " + name) "use the planet bought in the shop" [] None
-    | None ->
+    let usable (c: Api.Card) = c.Set = Api.CardSet.Planet || Tarot.effect c.Key = Some Tarot.Money
+
+    match g.Consumables.Cards |> List.tryFindIndex usable, moneyBuy g with
+    | Some index, _ ->
+        let card = g.Consumables.Cards[index]
+        let name = card.Label
+
+        if card.Set = Api.CardSet.Planet then
+            UsePlanet index, decision seq g ("use " + name) "use the planet bought in the shop" [] None
+        else
+            UseTarot(index, []),
+            decision seq g ("use " + name) (sprintf "use %s: gives $%d" name (moneyGain g card.Key 0)) [] None
+    | None, Some(index, card, gain) ->
+        BuyCard index,
+        decision
+            seq
+            g
+            (sprintf "buy %s for $%d" card.Label card.Cost.Buy)
+            (sprintf "buy %s for $%d: using it gives $%d" card.Label card.Cost.Buy gain)
+            []
+            None
+    | None, None ->
         let build = shopBuild g
 
         let owned = build.Jokers.Length
@@ -277,6 +315,10 @@ let private shopAction seq (g: Api.GameState) =
 
         let planText = skipNote + "; " + Plan.text plan
 
+        let targetedHeld =
+            g.Consumables.Cards
+            |> List.exists (fun c -> Tarot.effect c.Key |> Option.exists ((<>) Tarot.Money))
+
         let offers =
             g.Shop.Cards
             |> List.indexed
@@ -288,6 +330,13 @@ let private shopAction seq (g: Api.GameState) =
                     |> Option.filter ((=) plan.Hand)
                     |> Option.filter (fun _ -> not (reserved c))
                     |> Option.map (fun hand -> Shop.PlanetOffer(i, hand, c.Label, c.Cost.Buy))
+                | Api.CardSet.Tarot when g.Consumables.Count < g.Consumables.Limit && not targetedHeld ->
+                    Tarot.effect c.Key
+                    |> Option.bind (fun effect ->
+                        match Tarot.targets effect plan build.Deck with
+                        | [] -> None
+                        | chosen ->
+                            Some(Shop.TarotOffer(i, c.Label, c.Cost.Buy, Tarot.transform effect chosen build.Deck)))
                 | _ -> None)
 
         let relaxedText =
@@ -543,9 +592,65 @@ let private packAction seq (g: Api.GameState) =
 
         passive seq g SkipPack "skip pack" rule
 
+let private effectText (effect: Tarot.Effect) (count: int) =
+    match effect with
+    | Tarot.Enhance(e, _) -> sprintf "makes %d cards %O cards" count e
+    | Tarot.ToSuit(suit, _) -> sprintf "changes %d cards to %O" count suit
+    | Tarot.Destroy _ -> sprintf "destroys %d cards" count
+    | Tarot.Money -> "gives money"
+
+let private useTarot seq (g: Api.GameState) : (Action * Decision) option =
+    g.Consumables.Cards
+    |> List.indexed
+    |> List.choose (fun (i, c) ->
+        Tarot.effect c.Key |> Option.filter ((<>) Tarot.Money) |> Option.map (fun effect -> i, c, effect))
+    |> List.tryPick (fun (index, tarot, effect) ->
+        let hand =
+            g.Hand.Cards
+            |> List.indexed
+            |> List.choose (fun (i, c) -> Mapping.toCard c |> Option.map (fun card -> i, card))
+
+        let cards = List.map snd hand
+        let pile = shopBuild g
+        let build = { pile with Deck = pile.Deck @ cards }
+        let seed = shopSeed g
+        let plan = Plan.make seed build
+
+        match Tarot.targets effect plan cards with
+        | [] -> None
+        | chosen ->
+            let after = { build with Deck = pile.Deck @ Tarot.transform effect chosen cards }
+            let before, later = Shop.roundScore seed 8 build, Shop.roundScore seed 8 after
+
+            if later > before then
+                let names = chosen |> List.map (fun j -> symbol cards[j]) |> String.concat " "
+                let chosenText = sprintf "use %s on [%s]" tarot.Label names
+
+                Some(
+                    UseTarot(index, chosen |> List.map (fun j -> fst hand[j])),
+                    decision
+                        seq
+                        g
+                        chosenText
+                        (sprintf
+                            "%s; simulated round score %.0f -> %.0f (%+.0f%%); %s"
+                            (effectText effect chosen.Length)
+                            before
+                            later
+                            ((later / before - 1.0) * 100.0)
+                            (Plan.text plan))
+                        []
+                        None
+                )
+            else
+                None)
+
 let decide (seq: int) (g: Api.GameState) : Action * Decision =
     match g.State with
-    | Api.State.SelectingHand -> liftVerdantLeaf seq g |> Option.defaultWith (fun () -> chooseAction seq g)
+    | Api.State.SelectingHand ->
+        liftVerdantLeaf seq g
+        |> Option.orElseWith (fun () -> useTarot seq g)
+        |> Option.defaultWith (fun () -> chooseAction seq g)
     | Api.State.BlindSelect ->
         let chosen =
             g.Blinds

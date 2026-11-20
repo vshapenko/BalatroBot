@@ -257,10 +257,12 @@ let ``a joker stencil is valued by the empty slots the build has`` () =
 
     Assert.Equal(roundScore 100 2 expected, evaluated.After)
 
+let private unmodeled (card: Api.Card) = { card with Key = "c_fool"; Label = "The Fool" }
+
 let private fixturePlan = "plan: Flush in Spades (34% of simulated plays)"
 
 [<Fact>]
-let ``policy never buys the tarot in the fixture shop`` () =
+let ``policy never buys a tarot it does not model`` () =
     let text = File.ReadAllText(AppContext.BaseDirectory + "fixtures/gamestate.SHOP.json")
 
     let g =
@@ -268,6 +270,7 @@ let ``policy never buys the tarot in the fixture shop`` () =
         | Ok g -> g
         | Error e -> failwith e
 
+    let g = { g with Shop = { g.Shop with Cards = [ unmodeled g.Shop.Cards[0]; g.Shop.Cards[1] ] } }
     let action, decision = Policy.decide 1 g
     Assert.True(action = Policy.BuyCard 1 || action = Policy.NextRound)
     Assert.Equal(None, decision.Predicted)
@@ -330,7 +333,7 @@ let private load name =
 let private tarotShop (g: Api.GameState) money =
     { g with
         Money = money
-        Shop = { g.Shop with Cards = [ g.Shop.Cards[0] ] } }
+        Shop = { g.Shop with Cards = [ unmodeled g.Shop.Cards[0] ] } }
 
 let private withoutPacks (g: Api.GameState) =
     { g with Packs = { g.Packs with Count = 0; Cards = [] } }
@@ -825,3 +828,98 @@ let ``a free joker slot keeps 6 dollars from the plan planet`` () =
     let broke = { free with Money = cost - 1; Shop = shop }
     let _, decision = Policy.decide 2 broke
     Assert.DoesNotContain("skipped", decision.Rule)
+
+let private tarotCard key label cost (template: Api.Card) =
+    { template with
+        Set = Api.CardSet.Tarot
+        Key = key
+        Label = label
+        Cost = { template.Cost with Buy = cost } }
+
+[<Fact>]
+let ``a tarot offer replaces the deck and is valued on it`` () =
+    let ranks = [ Two; Three; Four; Five; Six; Seven; Eight; Nine; Ten; Jack; Queen; King; Ace ]
+
+    let mixed =
+        [ for suit in [ Diamonds; Diamonds; Diamonds; Spades ] do
+              for rank in ranks -> card rank suit ]
+
+    let owned = { build [] with Deck = mixed }
+    let plan = Plan.make 100 owned
+    Assert.Equal(Flush, plan.Hand)
+    Assert.Equal(Some Diamonds, plan.Suit)
+
+    let effect = (Tarot.effect "c_star").Value
+    let chosen = Tarot.targets effect plan owned.Deck
+    let changed = Tarot.transform effect chosen owned.Deck
+    let diamonds (cards: Card list) = cards |> List.filter (fun c -> c.Suit = Diamonds) |> List.length
+    Assert.Equal(diamonds owned.Deck + 3, diamonds changed)
+
+    let e = evaluate 100 4 10 None owned [ TarotOffer(0, "The Star", 3, changed) ] |> List.exactlyOne
+    Assert.Equal(roundScore 100 4 { owned with Deck = changed }, e.After)
+    Assert.Equal(3, cost e.Offer)
+
+[<Fact>]
+let ``policy buys the tarot that serves its plan suit and ignores one that does not`` () =
+    let g = load "SHOP"
+    let action, decision = Policy.decide 1 g
+    Assert.Equal(Policy.BuyCard 0, action)
+    Assert.Equal("buy The World for $3", decision.Chosen)
+    Assert.EndsWith("; " + fixturePlan, decision.Rule)
+
+    let star = tarotCard "c_star" "The Star" 3 g.Shop.Cards[0]
+    Assert.NotEqual(Policy.BuyCard 0, fst (Policy.decide 1 { g with Shop = { g.Shop with Cards = [ star ] } }))
+
+    let holding = { g with Consumables = { g.Consumables with Count = 1; Cards = [ star ] } }
+    Assert.NotEqual(Policy.BuyCard 0, fst (Policy.decide 1 holding))
+
+[<Fact>]
+let ``policy buys The Hermit only when using it gives at least 5 dollars`` () =
+    let g = load "SHOP"
+    let hermit = tarotCard "c_hermit" "The Hermit" 3 g.Shop.Cards[0]
+    let shop money = { g with Money = money; Shop = { g.Shop with Cards = [ hermit ] } }
+
+    let action, decision = Policy.decide 1 (shop 13)
+    Assert.Equal(Policy.BuyCard 0, action)
+    Assert.Contains("using it gives $10", decision.Rule)
+    Assert.NotEqual(Policy.BuyCard 0, fst (Policy.decide 1 (shop 7)))
+
+    let full = { shop 13 with Consumables = { g.Consumables with Count = g.Consumables.Limit } }
+    Assert.NotEqual(Policy.BuyCard 0, fst (Policy.decide 1 full))
+
+[<Fact>]
+let ``policy buys Temperance for the sell value of its jokers and uses a held money tarot`` () =
+    let g = load "SHOP"
+    let temperance = tarotCard "c_temperance" "Temperance" 3 g.Shop.Cards[0]
+    let plain = { g.Shop.Cards[1] with Set = Api.CardSet.Joker; Key = "j_joker"; Label = "Joker"; Cost = { Sell = 3; Buy = 6 } }
+    let jokers = { g.Jokers with Count = 2; Cards = [ plain; { plain with Id = 101 } ] }
+    let shop = { g with Money = 13; Jokers = jokers; Shop = { g.Shop with Cards = [ temperance ] } }
+
+    let action, decision = Policy.decide 1 shop
+    Assert.Equal(Policy.BuyCard 0, action)
+    Assert.Equal("buy Temperance for $3: using it gives $6", decision.Rule)
+
+    let held = { shop with Consumables = { g.Consumables with Count = 1; Cards = [ temperance ] } }
+    let action, decision = Policy.decide 1 held
+    Assert.Equal(Policy.UseTarot(0, []), action)
+    Assert.Equal("use Temperance: gives $6", decision.Rule)
+
+[<Fact>]
+let ``policy uses a held tarot in the hand when the simulation says the deck improves`` () =
+    let g = load "SELECTING_HAND"
+    let star = tarotCard "c_star" "The Star" 3 (load "SHOP").Shop.Cards[0]
+
+    let toDiamonds (c: Api.Card) =
+        let suit s = if s = Api.Suit.Spades || s = Api.Suit.Hearts then Api.Suit.Diamonds else s
+        { c with Value = { c.Value with Suit = c.Value.Suit |> Option.map suit } }
+
+    let pile = { g.Cards with Cards = g.Cards.Cards |> List.map toDiamonds }
+    let held = { g with Consumables = { g.Consumables with Count = 1; Cards = [ star ] }; Cards = pile }
+
+    let action, decision = Policy.decide 1 held
+    Assert.Equal(Policy.UseTarot(0, [ 7; 4; 5 ]), action)
+    Assert.Equal("use The Star on [7C 8S 8H]", decision.Chosen)
+    Assert.Equal("changes 3 cards to Diamonds; simulated round score 1343 -> 1390 (+4%); plan: Flush in Diamonds (76% of simulated plays)", decision.Rule)
+
+    let plain = fst (Policy.decide 1 { held with Consumables = g.Consumables })
+    Assert.NotEqual(action, plain)

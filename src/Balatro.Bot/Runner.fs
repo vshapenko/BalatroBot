@@ -199,6 +199,7 @@ let runOne
                         loop startWon (seq + 1) after plays discards exact purchases sales rerolls (packs + 1))
                 | Policy.PickPack index -> next (Api.pack client (Api.PickCard(index, [])))
                 | Policy.UsePlanet index -> next (Api.useConsumable client index [])
+                | Policy.UseTarot(index, targets) -> next (Api.useConsumable client index targets)
                 | Policy.ReorderJokers order -> next (Api.rearrange client (Api.RearrangeJokers order))
                 | Policy.SkipPack -> next (Api.pack client Api.SkipPack)
             with ex ->

@@ -17,6 +17,7 @@ type Build =
 type Offer =
     | JokerOffer of position: int * joker: Jokers.Joker * cost: int
     | PlanetOffer of position: int * hand: HandType * name: string * cost: int
+    | TarotOffer of position: int * name: string * cost: int * deck: Card list
 
 type Evaluated =
     { Offer: Offer
@@ -220,12 +221,14 @@ let private interest money = min 5 (money / 5)
 let cost offer =
     match offer with
     | JokerOffer(_, _, cost)
-    | PlanetOffer(_, _, _, cost) -> cost
+    | PlanetOffer(_, _, _, cost)
+    | TarotOffer(_, _, cost, _) -> cost
 
 let position offer =
     match offer with
     | JokerOffer(position, _, _)
-    | PlanetOffer(position, _, _, _) -> position
+    | PlanetOffer(position, _, _, _)
+    | TarotOffer(position, _, _, _) -> position
 
 let revalue (build: Build) : Build =
     let jokers = build.Jokers
@@ -361,6 +364,7 @@ let private apply (build: Build) offer =
                         { Chips = level.Chips + two.Chips - one.Chips
                           Mult = level.Mult + two.Mult - one.Mult }
                 Situation = paid }
+        | TarotOffer(_, _, _, deck) -> { build with Deck = deck; Situation = paid }
     )
 
 let evaluate (seed: int) (samples: int) (money: int) (boss: string option) (build: Build) (offers: Offer list) : Evaluated list =
@@ -381,7 +385,8 @@ let evaluate (seed: int) (samples: int) (money: int) (boss: string option) (buil
         cost offer <= money
         && match offer with
            | JokerOffer _ -> build.Jokers.Length < build.Situation.JokerSlots
-           | PlanetOffer _ -> true)
+           | PlanetOffer _
+           | TarotOffer _ -> true)
     |> List.map (fun offer ->
         { Offer = offer
           Before = before
@@ -459,7 +464,8 @@ let upgrades (seed: int) (samples: int) (money: int) (build: Build) (offers: Off
                                 After = horizon seed samples (apply sold offer)
                                 Net = net
                                 Threshold = 1.05 + 0.05 * float (interest held - interest (held - price)) }
-              | PlanetOffer _ -> () ]
+              | PlanetOffer _
+              | TarotOffer _ -> () ]
         |> List.sortBy (fun u -> -(u.After / u.Before), u.Net, u.Sell)
 
 let chooseUpgrade (upgrades: Upgrade list) : Upgrade option =
