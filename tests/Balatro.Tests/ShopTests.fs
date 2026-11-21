@@ -880,18 +880,38 @@ let ``a tarot offer replaces the deck and is valued on it`` () =
     Assert.Equal(3, cost e.Offer)
 
 [<Fact>]
-let ``policy buys the tarot that serves its plan suit and ignores one that does not`` () =
+let ``policy buys a tarot only at plus 15 percent and ignores one that does not serve its plan`` () =
     let g = load "SHOP"
-    let action, decision = Policy.decide 1 g
+    let world = Policy.decide 1 g
+    Assert.Equal(Policy.NextRound, fst world)
+
+    let empress = tarotCard "c_empress" "The Empress" 3 g.Shop.Cards[0]
+    let action, decision = Policy.decide 1 { g with Shop = { g.Shop with Cards = [ empress ] } }
     Assert.Equal(Policy.BuyCard 0, action)
-    Assert.Equal("buy The World for $3", decision.Chosen)
-    Assert.EndsWith("; " + fixturePlan, decision.Rule)
+    Assert.Equal("buy The Empress for $3", decision.Chosen)
+    Assert.Contains("(+22%); threshold +15%;", decision.Rule)
 
     let star = tarotCard "c_star" "The Star" 3 g.Shop.Cards[0]
     Assert.NotEqual(Policy.BuyCard 0, fst (Policy.decide 1 { g with Shop = { g.Shop with Cards = [ star ] } }))
 
-    let holding = { g with Consumables = { g.Consumables with Count = 1; Cards = [ star ] } }
+    let holding =
+        { g with
+            Consumables = { g.Consumables with Count = 1; Cards = [ star ] }
+            Shop = { g.Shop with Cards = [ empress ] } }
+
     Assert.NotEqual(Policy.BuyCard 0, fst (Policy.decide 1 holding))
+
+[<Fact>]
+let ``policy buys a qualifying joker before a tarot with a larger gain`` () =
+    let g = load "SHOP"
+    let empress = tarotCard "c_empress" "The Empress" 3 g.Shop.Cards[0]
+    let bull = { g.Shop.Cards[1] with Set = Api.CardSet.Joker; Key = "j_bull"; Label = "Bull"; Cost = { Sell = 2; Buy = 4 } }
+
+    let action, decision = Policy.decide 1 { g with Shop = { g.Shop with Cards = [ empress; bull ] } }
+    Assert.Equal(Policy.BuyCard 1, action)
+    Assert.Equal("buy Bull for $4", decision.Chosen)
+    Assert.Contains("(+9%)", decision.Rule)
+    Assert.Contains("The Empress, $3, round score 916 -> 1117 (+22%)", decision.Candidates[1].Detail)
 
 [<Fact>]
 let ``policy buys The Hermit only when using it gives at least 5 dollars`` () =

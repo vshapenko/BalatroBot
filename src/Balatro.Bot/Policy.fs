@@ -388,16 +388,26 @@ let private shopAction seq (g: Api.GameState) =
             | Shop.JokerOffer(_, joker, _) -> xMultKeys.Contains joker.Key
             | _ -> false
 
+        let isTarot (e: Shop.Evaluated) =
+            match e.Offer with
+            | Shop.TarotOffer _ -> true
+            | _ -> false
+
+        let untargeted = evaluated |> List.filter (not << isTarot)
+
         let choice =
             if hunting then
-                evaluated
+                untargeted
                 |> List.tryFind (fun e -> isXMult e && e.After / e.Before >= Shop.threshold owned e)
-                |> Option.orElse (Shop.choose owned evaluated)
+                |> Option.orElse (Shop.choose owned untargeted)
             else
-                Shop.choose owned evaluated
+                Shop.choose owned untargeted
 
-        match choice with
-        | Some e ->
+        let tarotChoice =
+            evaluated
+            |> List.tryFind (fun e -> isTarot e && e.After / e.Before >= max 1.15 (Shop.threshold owned e))
+
+        let buy (e: Shop.Evaluated) (bar: float) =
             let others = evaluated |> List.filter (fun o -> Shop.position o.Offer <> Shop.position e.Offer)
             let candidates = e :: others |> List.truncate 5 |> List.map candidate
 
@@ -407,10 +417,13 @@ let private shopAction seq (g: Api.GameState) =
                     e.Before
                     e.After
                     (percent e)
-                    (thresholdText (offered e.Offer) (needed e))
+                    (thresholdText (offered e.Offer) bar)
                     (lastNote + earlyNote + goalNote + bossNote + planText)
 
             BuyCard(Shop.position e.Offer), decision seq g candidates.Head.Action rule candidates None
+
+        match choice with
+        | Some e -> buy e (needed e)
         | None ->
             let upgrades =
                 Shop.upgrades seed 20 g.Money build offers
@@ -421,8 +434,8 @@ let private shopAction seq (g: Api.GameState) =
                             (if relaxed then 1.05 else u.Threshold)
                             + 0.05 * float (stickerLoss (offered u.Offer)) })
 
-            match Shop.chooseUpgrade upgrades with
-            | Some u ->
+            match Shop.chooseUpgrade upgrades, tarotChoice with
+            | Some u, _ ->
                 let sold = build.Jokers[u.Sell]
                 let bought = offerName u.Offer
 
@@ -451,7 +464,8 @@ let private shopAction seq (g: Api.GameState) =
 
                 let candidates = upgrades |> List.truncate 5 |> List.map candidate
                 SellJoker u.Sell, decision seq g (sprintf "sell %s to buy %s" sold.Name bought) rule candidates None
-            | None ->
+            | None, Some e -> buy e (((max 1.15 (Shop.threshold owned e)) - 1.0) * 100.0)
+            | None, None ->
                 let order = Shop.bestOrder seed 8 build
 
                 if order <> [ 0 .. build.Jokers.Length - 1 ] then
