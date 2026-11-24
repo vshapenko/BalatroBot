@@ -57,24 +57,168 @@ let private best (hand: Card list) levels =
 let private chosen hand levels =
     PlayNet.choose net.Value hand levels |> Option.get
 
+let private disagreements (cases: (Card list * Map<HandType, HandLevel>)[]) =
+    cases
+    |> Array.Parallel.map (fun (hand, levels) -> hand, levels, PlayNet.choose net.Value hand levels, best hand levels)
+    |> Array.filter (fun (_, _, got, expected) -> got <> Some expected)
+
+let private enhancements =
+    None
+    :: [ for e in [ Enhancement.Bonus; Enhancement.Mult; Enhancement.Wild; Enhancement.Glass
+                    Enhancement.Steel; Enhancement.Stone; Enhancement.Gold; Enhancement.Lucky ] -> Some e ]
+
+let private editions = None :: [ for e in [ Foil; Holo; Polychrome; Negative ] -> Some e ]
+
+let private seals =
+    None :: [ for e in [ Seal.Red; Seal.Blue; Seal.Gold; Seal.Purple ] -> Some e ]
+
+// The precision limits of the net, from the card fields: Polychrome plus Steel passes, and Glass passes
+let private breaksLimits (hand: Card list) =
+    let passes (c: Card) = if c.Seal = Some Seal.Red then 2 else 1
+
+    let weight =
+        hand
+        |> List.sumBy (fun c ->
+            passes c * ((if c.Edition = Some Polychrome then 1 else 0) + (if c.Enhancement = Some Enhancement.Steel then 1 else 0)))
+
+    let glass = hand |> List.sumBy (fun c -> if c.Enhancement = Some Enhancement.Glass then passes c else 0)
+    weight > 8 || glass > 6
+
+let private modified enhancement edition seal (c: Card) =
+    { c with Enhancement = enhancement; Edition = edition; Seal = seal }
+
+let private withEdition edition (c: Card) = { c with Edition = Some edition }
+
+let private withSeal seal (c: Card) = { c with Seal = Some seal }
+
 [<Fact>]
-let ``agrees with the search on 3000 random hands`` () =
+let ``agrees with the search on 500 random plain hands`` () =
     let random = Random(2026)
 
     let cases =
-        Array.init 3000 (fun _ ->
+        Array.init 500 (fun _ ->
             let size = random.Next(1, 9)
             let shuffled = Array.copy deck
             random.Shuffle shuffled
             let levels = levelsAt (fun _ -> random.Next(1, 31))
             List.ofArray shuffled[.. size - 1], levels)
 
-    let failures =
-        cases
-        |> Array.Parallel.map (fun (hand, levels) -> hand, levels, PlayNet.choose net.Value hand levels, best hand levels)
-        |> Array.filter (fun (_, _, got, expected) -> got <> Some expected)
+    let failures = disagreements cases
 
     Assert.True(failures.Length = 0, $"{failures.Length} of {cases.Length} hands disagree; first: %A{Array.truncate 5 failures}")
+
+type ModifierAgreement(output: Xunit.Abstractions.ITestOutputHelper) =
+    [<Fact>]
+    member _.``agrees with the search on 1500 random modified hands`` () =
+        let random = Random(2027)
+        let pick (options: 'a list) = options[random.Next options.Length]
+
+        let cases =
+            Array.init 1500 (fun _ ->
+                let size = random.Next(1, 9)
+                let shuffled = Array.copy deck
+                random.Shuffle shuffled
+                let hand = [ for c in shuffled[.. size - 1] -> modified (pick enhancements) (pick editions) (pick seals) c ]
+                hand, levelsAt (fun _ -> random.Next(1, 31)))
+
+        let results =
+            cases
+            |> Array.Parallel.map (fun (hand, levels) -> hand, levels, PlayNet.choose net.Value hand levels, best hand levels)
+
+        let rejected = results |> Array.filter (fun (_, _, got, _) -> got.IsNone)
+        let checkedHands = results |> Array.filter (fun (_, _, got, _) -> got.IsSome)
+        let loose = rejected |> Array.filter (fun (hand, _, _, _) -> not (breaksLimits hand))
+        let failures = checkedHands |> Array.filter (fun (_, _, got, expected) -> got <> Some expected)
+
+        output.WriteLine $"checked {checkedHands.Length}, rejected {rejected.Length}"
+
+        Assert.True(loose.Length = 0, $"{loose.Length} hands rejected inside the limits; first: %A{Array.truncate 5 loose}")
+        Assert.True(checkedHands.Length >= 1000, $"only {checkedHands.Length} hands checked")
+        Assert.True(failures.Length = 0, $"{failures.Length} of {checkedHands.Length} hands disagree; first: %A{Array.truncate 5 failures}")
+
+// The net's choice must equal the search's head and Scoring.score of that play
+let private agree (hand: Card list) levels =
+    let positions, total, got = chosen hand levels
+    let played = positions |> List.map (fun i -> hand[i])
+    let held = hand |> List.indexed |> List.filter (fun (i, _) -> not (List.contains i positions)) |> List.map snd
+    let expected = score levels played held
+
+    Assert.Equal(expected.Total, total)
+    Assert.Equal(expected.HandType, got)
+    Assert.Equal(best hand levels, (positions, total, got))
+    positions, total, got
+
+[<Fact>]
+let ``folds mult in played order`` () =
+    let multFirst = [ withEnhancement Enhancement.Mult (card King Spades); withEnhancement Enhancement.Glass (card King Hearts) ]
+    let firstPositions, firstTotal, _ = agree multFirst levelOne
+    let _, secondTotal, _ = agree (List.rev multFirst) levelOne
+
+    Assert.Equal<int list>([ 0; 1 ], firstPositions)
+    Assert.Equal(360.0, firstTotal)
+    Assert.Equal(240.0, secondTotal)
+
+[<Fact>]
+let ``repeats a Polychrome card with a Red Seal`` () =
+    let polychrome = withEdition Polychrome (card Ace Spades)
+    let hand seal = [ (if seal then withSeal Seal.Red polychrome else polychrome); card Ace Hearts ]
+    let _, plain, _ = agree (hand false) levelOne
+    let _, repeated, _ = agree (hand true) levelOne
+
+    Assert.True(repeated > plain)
+
+[<Fact>]
+let ``multiplies by held Steel once, or twice with a Red Seal`` () =
+    let hand steel = [ card Ace Spades; steel (card King Hearts) ]
+    let steel = withEnhancement Enhancement.Steel
+    let positions, once, _ = agree (hand steel) levelOne
+    let _, twice, _ = agree (hand (steel >> withSeal Seal.Red)) levelOne
+
+    Assert.Equal<int list>([ 0 ], positions)
+    Assert.Equal(24.0, once)
+    Assert.Equal(36.0, twice)
+
+[<Fact>]
+let ``scores a Stone with no rank or suit`` () =
+    let stone = withEnhancement Enhancement.Stone
+    let alone, _, _ = agree [ stone (card Ace Spades) ] levelOne
+    let _, _, withKicker = agree [ card King Spades; card King Hearts; card King Clubs; card King Diamonds; stone (card Three Spades) ] levelOne
+    let _, _, highCard = agree [ stone (card Two Spades); card Seven Clubs ] levelOne
+
+    Assert.Equal<int list>([ 0 ], alone)
+    Assert.Equal(FourOfAKind, withKicker)
+    Assert.Equal(HighCard, highCard)
+
+[<Fact>]
+let ``counts a Wild card in a Flush`` () =
+    let hand = [ card Two Hearts; card Five Hearts; card Nine Hearts; card King Hearts; withEnhancement Enhancement.Wild (card Seven Spades) ]
+    let positions, _, handType = agree hand levelOne
+
+    Assert.Equal(Flush, handType)
+    Assert.Equal<int list>([ 0; 1; 2; 3; 4 ], positions)
+
+[<Fact>]
+let ``agrees at the top levels and the precision limits`` () =
+    let top = handTypes |> List.map (fun t -> t, { Chips = 5000.0; Mult = 200.0 }) |> Map.ofList
+    let glassPolychromeRed = card King Spades |> modified (Some Enhancement.Glass) (Some Polychrome) (Some Seal.Red)
+    let rest = [ card Queen Spades; card Queen Hearts; card Seven Clubs; card Four Diamonds ]
+
+    let glassHand =
+        [ glassPolychromeRed
+          withSeal Seal.Red (withEnhancement Enhancement.Glass (withEdition Polychrome (card King Hearts)))
+          withSeal Seal.Red (withEnhancement Enhancement.Glass (withEdition Polychrome (card King Clubs)))
+          withSeal Seal.Red (withEdition Polychrome (card Two Spades)) ]
+        @ rest
+
+    let steelHand =
+        [ for c in [ card King Spades; card King Hearts; card King Clubs ] -> withSeal Seal.Red (withEnhancement Enhancement.Glass c) ]
+        @ [ for c in [ card Queen Spades; card Queen Hearts; card Seven Clubs; card Four Diamonds ] ->
+                withSeal Seal.Red (withEnhancement Enhancement.Steel c) ]
+        @ [ card Two Spades ]
+
+    for hand in [ glassHand; steelHand ] do
+        Assert.False(breaksLimits hand)
+        agree hand top |> ignore
 
 [<Fact>]
 let ``reaches every hand type`` () =
@@ -125,12 +269,14 @@ let ``breaks ties like the search`` () =
 let ``declines hands outside its scope`` () =
     let plain = [ card Ace Spades; card King Hearts ]
     let pairLevel = levelOne[Pair]
+    let steelRed = card Ace Spades |> modified (Some Enhancement.Steel) None (Some Seal.Red)
 
-    Assert.Equal(None, PlayNet.choose net.Value [ withEnhancement Enhancement.Glass (card Ace Spades) ] levelOne)
     Assert.Equal(None, PlayNet.choose net.Value [ { card Ace Spades with Debuffed = true } ] levelOne)
     Assert.Equal(None, PlayNet.choose net.Value (List.init 9 (fun i -> deck[i])) levelOne)
     Assert.Equal(None, PlayNet.choose net.Value [] levelOne)
     Assert.Equal(None, PlayNet.choose net.Value plain (Map.add Pair { pairLevel with Mult = 201.0 } levelOne))
+    Assert.Equal(None, PlayNet.choose net.Value plain (Map.remove Pair levelOne))
+    Assert.Equal(None, PlayNet.choose net.Value (List.replicate 4 steelRed @ [ withEdition Polychrome (card King Hearts) ]) levelOne)
 
 [<Fact>]
 let ``readme lists every dim once`` () =

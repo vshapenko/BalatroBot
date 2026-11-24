@@ -5,10 +5,10 @@ open System.IO
 open System.Text.Json
 open Balatro.Core.Domain
 
-// A sparse matrix by rows: row r holds Cols/Vals from Start[r] to Start[r + 1] - 1
+// A sparse matrix grouped by row or by column: group g holds Index/Vals from Start[g] to Start[g + 1] - 1
 type private Sparse =
     { Start: int[]
-      Cols: int[]
+      Index: int[]
       Vals: float[] }
 
 type private Head =
@@ -17,22 +17,25 @@ type private Head =
       Wv: Sparse
       Wo: Sparse }
 
+type private Limits =
+    { Mult: float
+      Chips: float
+      Weight: int
+      Glass: int }
+
 type Net =
     private
         { D: int
           Loops: int
-          JStart: float
+          Limits: Limits
           Dims: Map<string, int>
           Heads: Head[]
           W1: Sparse
           B1: float[]
-          W2: Sparse
-          B2: float[] }
+          W2: Sparse }
 
-let private maxMult = 200.0
-let private maxChips = 5000.0
-let private slots = 13
 let private cardSlots = 8
+let private positions = 5
 
 let private handTypes =
     [ FlushFive, "FlushFive"
@@ -55,22 +58,24 @@ let private suitName suit =
     | Clubs -> "C"
     | Diamonds -> "D"
 
-let private sparse (rows: int) (triplets: JsonElement) =
+let private sparse (groups: int) (byColumn: bool) (triplets: JsonElement) =
     let entries =
-        [| for t in triplets.EnumerateArray() -> t[0].GetInt32(), t[1].GetInt32(), t[2].GetDouble() |]
-        |> Array.sortBy (fun (r, c, _) -> r, c)
+        [| for t in triplets.EnumerateArray() ->
+               let row, col = t[0].GetInt32(), t[1].GetInt32()
+               (if byColumn then col, row else row, col), t[2].GetDouble() |]
+        |> Array.sortBy fst
 
-    let start = Array.zeroCreate (rows + 1)
+    let start = Array.zeroCreate (groups + 1)
 
-    for r, _, _ in entries do
-        start[r + 1] <- start[r + 1] + 1
+    for (group, _), _ in entries do
+        start[group + 1] <- start[group + 1] + 1
 
-    for r in 0 .. rows - 1 do
-        start[r + 1] <- start[r + 1] + start[r]
+    for g in 0 .. groups - 1 do
+        start[g + 1] <- start[g + 1] + start[g]
 
     { Start = start
-      Cols = entries |> Array.map (fun (_, c, _) -> c)
-      Vals = entries |> Array.map (fun (_, _, v) -> v) }
+      Index = entries |> Array.map (fun ((_, other), _) -> other)
+      Vals = entries |> Array.map snd }
 
 let private rowsOf (triplets: JsonElement) =
     1 + (triplets.EnumerateArray() |> Seq.map (fun t -> t[0].GetInt32()) |> Seq.max)
@@ -88,25 +93,29 @@ let load (path: string) : Net =
     let root = doc.RootElement
     let d = root.GetProperty("d").GetInt32()
     let hidden = root.GetProperty("hidden").GetInt32()
+    let limits = root.GetProperty "limits"
 
     let head (h: JsonElement) =
         let wq = h.GetProperty "Wq"
         let wv = h.GetProperty "Wv"
 
-        { Wq = sparse (rowsOf wq) wq
-          Wk = sparse (rowsOf wq) (h.GetProperty "Wk")
-          Wv = sparse (rowsOf wv) wv
-          Wo = sparse d (h.GetProperty "Wo") }
+        { Wq = sparse (rowsOf wq) false wq
+          Wk = sparse (rowsOf wq) false (h.GetProperty "Wk")
+          Wv = sparse (rowsOf wv) false wv
+          Wo = sparse d false (h.GetProperty "Wo") }
 
     { D = d
       Loops = root.GetProperty("loops").GetInt32()
-      JStart = root.GetProperty("jStart").GetDouble()
+      Limits =
+        { Mult = limits.GetProperty("mult").GetDouble()
+          Chips = limits.GetProperty("chips").GetDouble()
+          Weight = limits.GetProperty("weight").GetInt32()
+          Glass = limits.GetProperty("glass").GetInt32() }
       Dims = [ for p in root.GetProperty("dims").EnumerateObject() -> p.Name, p.Value.GetInt32() ] |> Map.ofList
       Heads = [| for h in root.GetProperty("heads").EnumerateArray() -> head h |]
-      W1 = sparse hidden (root.GetProperty "W1")
+      W1 = sparse d true (root.GetProperty "W1")
       B1 = dense hidden (root.GetProperty "b1")
-      W2 = sparse d (root.GetProperty "W2")
-      B2 = dense d (root.GetProperty "b2") }
+      W2 = sparse hidden true (root.GetProperty "W2") }
 
 let rec private combos k start n =
     if k = 0 then
@@ -122,41 +131,59 @@ let private subsetsOf n =
 
 let private isWhole (v: float) = v = Math.Floor v
 
-let private inScope (hand: Card list) (levels: Map<HandType, HandLevel>) =
+// Passes of the Polychrome and Steel effects, and of the Glass effect, that a hand can make; a Red Seal doubles a pass
+let private passes (hand: Card list) =
+    let count (c: Card) (flags: bool list) =
+        (if c.Seal = Some Seal.Red then 2 else 1) * (flags |> List.filter id |> List.length)
+
+    hand |> List.sumBy (fun c -> count c [ c.Edition = Some Polychrome; c.Enhancement = Some Enhancement.Steel ]),
+    hand |> List.sumBy (fun c -> count c [ c.Enhancement = Some Enhancement.Glass ])
+
+let private inScope (net: Net) (hand: Card list) (levels: Map<HandType, HandLevel>) =
+    let weight, glass = passes hand
+
     not hand.IsEmpty
     && hand.Length <= cardSlots
-    && hand
-       |> List.forall (fun c -> c.Enhancement.IsNone && c.Edition.IsNone && c.Seal.IsNone && not c.Debuffed)
+    && hand |> List.forall (fun c -> not c.Debuffed)
+    && weight <= net.Limits.Weight
+    && glass <= net.Limits.Glass
     && handTypes
        |> List.forall (fun (t, _) ->
-           let level = levels[t]
+           match Map.tryFind t levels with
+           | Some level ->
+               isWhole level.Mult
+               && level.Mult >= 1.0
+               && level.Mult <= net.Limits.Mult
+               && isWhole level.Chips
+               && level.Chips >= 0.0
+               && level.Chips <= net.Limits.Chips
+           | None -> false)
 
-           isWhole level.Mult
-           && level.Mult >= 1.0
-           && level.Mult <= maxMult
-           && isWhole level.Chips
-           && level.Chips >= 0.0
-           && level.Chips <= maxChips)
-
-// Tokens: the cards, 5 nulls, one per subset of the cards, the selector
+// Tokens: the eight card slots (empty ones blank), 5 nulls, one per subset of the cards, the selector
 let private encode (net: Net) (hand: Card list) (levels: Map<HandType, HandLevel>) : float[][] =
     let dim (name: string) = net.Dims[name]
 
     let token () =
         let x = Array.zeroCreate net.D
         x[dim "one"] <- 1.0
-        x[dim "j"] <- net.JStart
         x
 
-    let cards =
-        hand
-        |> List.mapi (fun i card ->
+    let slotTokens =
+        List.init cardSlots (fun i ->
             let x = token ()
-            x[dim "isCard"] <- 1.0
             x[dim $"slot_{i}"] <- 1.0
-            x[dim $"rank_{Rank.id card.Rank}"] <- 1.0
-            x[dim $"suit_{suitName card.Suit}"] <- 1.0
-            x[dim "nominal"] <- float (Rank.nominal card.Rank)
+
+            match List.tryItem i hand with
+            | Some card ->
+                x[dim "isCard"] <- 1.0
+                x[dim $"rank_{Rank.id card.Rank}"] <- 1.0
+                x[dim $"suit_{suitName card.Suit}"] <- 1.0
+                x[dim "nominal"] <- float (Rank.nominal card.Rank)
+                card.Enhancement |> Option.iter (fun e -> x[dim $"enh_{e}"] <- 1.0)
+                card.Edition |> Option.iter (fun e -> x[dim $"ed_{e}"] <- 1.0)
+                card.Seal |> Option.iter (fun e -> x[dim $"seal_{e}"] <- 1.0)
+            | None -> ()
+
             x)
 
     let nulls =
@@ -173,11 +200,9 @@ let private encode (net: Net) (hand: Card list) (levels: Map<HandType, HandLevel
             x[dim "isCand"] <- 1.0
             x[dim "idx"] <- float position
 
-            for i in subset do
-                x[dim $"member_{i}"] <- 1.0
-
-            for k in 0 .. 5 - subset.Length - 1 do
-                x[dim $"member_{cardSlots + k}"] <- 1.0
+            for k in 0 .. positions - 1 do
+                let slot = if k < subset.Length then subset[k] else cardSlots + k - subset.Length
+                x[dim $"m{k + 1}_{slot}"] <- 1.0
 
             for t, name in handTypes do
                 x[dim $"C_{name}"] <- levels[t].Chips
@@ -191,7 +216,7 @@ let private encode (net: Net) (hand: Card list) (levels: Map<HandType, HandLevel
         x[dim "isSel"] <- 1.0
         x
 
-    cards @ nulls @ candidates @ [ selector ] |> Array.ofList
+    slotTokens @ nulls @ candidates @ [ selector ] |> Array.ofList
 
 // out[offset + r] = row r of m times x
 let private mul (m: Sparse) (x: float[]) (out: float[]) (offset: int) =
@@ -199,13 +224,14 @@ let private mul (m: Sparse) (x: float[]) (out: float[]) (offset: int) =
         let mutable sum = 0.0
 
         for k in m.Start[r] .. m.Start[r + 1] - 1 do
-            sum <- sum + m.Vals[k] * x[m.Cols[k]]
+            sum <- sum + m.Vals[k] * x[m.Index[k]]
 
         out[offset + r] <- sum
 
 let private rows (m: Sparse) = m.Start.Length - 1
 
-// Dense softmax attention with max subtraction over all tokens; the result is added to delta
+// Softmax attention over all tokens, added to delta. A token whose key is all zero scores 0 with every
+// query, so those tokens share one weight and their values enter through one sum
 let private attend (head: Head) (xs: float[][]) (delta: float[][]) =
     let n = xs.Length
     let dq = rows head.Wq
@@ -219,41 +245,58 @@ let private attend (head: Head) (xs: float[][]) (delta: float[][]) =
         mul head.Wk xs[i] k (i * dq)
         mul head.Wv xs[i] v (i * dv)
 
-    let weights = Array.zeroCreate n
+    let keyed = [| for j in 0 .. n - 1 do if Seq.exists (fun c -> k[j * dq + c] <> 0.0) (seq { 0 .. dq - 1 }) then j |]
+    let isKeyed = Array.zeroCreate n
+
+    for j in keyed do
+        isKeyed[j] <- true
+
+    let unkeyedSum = Array.zeroCreate dv
+
+    for j in 0 .. n - 1 do
+        if not isKeyed[j] then
+            for c in 0 .. dv - 1 do
+                unkeyedSum[c] <- unkeyedSum[c] + v[j * dv + c]
+
+    let unkeyed = float (n - keyed.Length)
+    let weights = Array.zeroCreate keyed.Length
     let mixed = Array.zeroCreate dv
     let projected = Array.zeroCreate delta[0].Length
 
     for i in 0 .. n - 1 do
-        let mutable top = Double.NegativeInfinity
+        let mutable top = 0.0
 
-        for j in 0 .. n - 1 do
+        for a in 0 .. keyed.Length - 1 do
             let mutable s = 0.0
 
             for c in 0 .. dq - 1 do
-                s <- s + q[i * dq + c] * k[j * dq + c]
+                s <- s + q[i * dq + c] * k[keyed[a] * dq + c]
 
-            weights[j] <- s
+            weights[a] <- s
             top <- Math.Max(top, s)
 
-        let mutable total = 0.0
+        let unkeyedWeight = Math.Exp(-top)
+        let mutable total = unkeyed * unkeyedWeight
 
-        for j in 0 .. n - 1 do
-            weights[j] <- Math.Exp(weights[j] - top)
-            total <- total + weights[j]
+        for a in 0 .. keyed.Length - 1 do
+            weights[a] <- Math.Exp(weights[a] - top)
+            total <- total + weights[a]
 
-        Array.fill mixed 0 dv 0.0
+        for c in 0 .. dv - 1 do
+            mixed[c] <- unkeyedWeight / total * unkeyedSum[c]
 
-        for j in 0 .. n - 1 do
-            let w = weights[j] / total
+        for a in 0 .. keyed.Length - 1 do
+            let w = weights[a] / total
 
             for c in 0 .. dv - 1 do
-                mixed[c] <- mixed[c] + w * v[j * dv + c]
+                mixed[c] <- mixed[c] + w * v[keyed[a] * dv + c]
 
         mul head.Wo mixed projected 0
 
         for r in 0 .. projected.Length - 1 do
             delta[i][r] <- delta[i][r] + projected[r]
 
+// x += attention; x += W2 ReLU(W1 x + b1). Both products skip the zero entries of their input
 let private block (net: Net) (xs: float[][]) (delta: float[][]) (hidden: float[]) (written: float[]) =
     for d in delta do
         Array.fill d 0 d.Length 0.0
@@ -262,26 +305,35 @@ let private block (net: Net) (xs: float[][]) (delta: float[][]) (hidden: float[]
         attend head xs delta
 
     for i in 0 .. xs.Length - 1 do
-        for r in 0 .. net.D - 1 do
-            xs[i][r] <- xs[i][r] + delta[i][r]
+        let x = xs[i]
 
-        mul net.W1 xs[i] hidden 0
+        for r in 0 .. net.D - 1 do
+            x[r] <- x[r] + delta[i][r]
+
+        Array.blit net.B1 0 hidden 0 hidden.Length
+
+        for c in 0 .. net.D - 1 do
+            if x[c] <> 0.0 then
+                for k in net.W1.Start[c] .. net.W1.Start[c + 1] - 1 do
+                    hidden[net.W1.Index[k]] <- hidden[net.W1.Index[k]] + net.W1.Vals[k] * x[c]
+
+        Array.fill written 0 written.Length 0.0
 
         for h in 0 .. hidden.Length - 1 do
-            hidden[h] <- Math.Max(0.0, hidden[h] + net.B1[h])
-
-        mul net.W2 hidden written 0
+            if hidden[h] > 0.0 then
+                for k in net.W2.Start[h] .. net.W2.Start[h + 1] - 1 do
+                    written[net.W2.Index[k]] <- written[net.W2.Index[k]] + net.W2.Vals[k] * hidden[h]
 
         for r in 0 .. net.D - 1 do
-            xs[i][r] <- xs[i][r] + written[r] + net.B2[r]
+            x[r] <- x[r] + written[r]
 
 let choose (net: Net) (hand: Card list) (levels: Map<HandType, HandLevel>) : (int list * float * HandType) option =
-    if not (inScope hand levels) then
+    if not (inScope net hand levels) then
         None
     else
         let xs = encode net hand levels
         let delta = Array.init xs.Length (fun _ -> Array.zeroCreate net.D)
-        let hidden = Array.zeroCreate (rows net.W1)
+        let hidden = Array.zeroCreate net.B1.Length
         let written = Array.zeroCreate net.D
 
         for _ in 1 .. net.Loops do
@@ -290,6 +342,6 @@ let choose (net: Net) (hand: Card list) (levels: Map<HandType, HandLevel>) : (in
         let selector = xs[xs.Length - 1]
         let dim (name: string) = selector[net.Dims[name]]
 
-        let positions = [ for i in 0 .. cardSlots - 1 do if dim $"sel_slot_{i}" > 0.5 then i ]
+        let played = [ for i in 0 .. cardSlots - 1 do if dim $"sel_slot_{i}" > 0.5 then i ]
         let handType = handTypes |> List.find (fun (_, name) -> dim $"sel_t_{name}" > 0.5) |> fst
-        Some(positions, Math.Round(dim "sel_acc"), handType)
+        Some(played, Math.Round(dim "sel_total"), handType)
