@@ -17,6 +17,10 @@ let private parseUnion<'a> (s: string) =
     |> Array.tryFind (fun c -> c.Name.ToUpperInvariant() = s)
     |> Option.map (fun c -> FSharpValue.MakeUnion(c, [||]) :?> 'a)
 
+let private shopLine () =
+    let picks, declines, differs = Shop.networkCounts ()
+    sprintf "shop network: %d picks, %d declined, %d differ" picks declines differs
+
 let private options (args: string list) =
     let rec go acc rest =
         match rest with
@@ -75,7 +79,9 @@ let private batch (rest: string list) =
         let url = Map.tryFind "--url" o |> Option.defaultValue "http://127.0.0.1:12346"
         let seeds = [ for i in 1..count -> sprintf "%s%04d" prefix i ]
         let net = Map.tryFind "--net" o |> Option.map PlayNet.load
+        Shop.useNetwork net
         Batch.run net (Api.create url) deck stake seeds "runs" |> Batch.summary stakeName |> printfn "%s"
+        if net.IsSome then printfn "%s" (shopLine ())
         0
     | None ->
         eprintfn "usage: batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--net <PATH>] [--url <URL>]"
@@ -114,6 +120,8 @@ let main argv =
         eprintfn "%s" usage
         2
     | Some(deck, stake, stakeName, seed, url, net) ->
+        Shop.useNetwork net
+
         match Runner.runOne net (Api.create url) deck stake seed (sprintf "runs/%s-%s" stakeName seed) with
         | Ok r ->
             printfn
@@ -125,6 +133,7 @@ let main argv =
                 r.ExactPredictions
                 r.Plays
 
+            if net.IsSome then printfn "%s" (shopLine ())
             0
         | Error e ->
             eprintfn "API error: %A" e

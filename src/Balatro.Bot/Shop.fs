@@ -1,6 +1,7 @@
 module Balatro.Bot.Shop
 
 open System
+open System.Threading
 open System.Globalization
 open System.Text.RegularExpressions
 open Balatro.Core
@@ -31,8 +32,17 @@ let private remaining (text: string) =
     let m = counter.Match text
     if m.Groups[1].Success then int m.Groups[1].Value else 0
 
+let mutable private network: PlayNet.Net option = None
+
+let useNetwork (net: PlayNet.Net option) = network <- net
+
+// picks, declines, picks whose breakdown total differs from the network's total
+let private counts = [| 0; 0; 0 |]
+
+let networkCounts () = counts[0], counts[1], counts[2]
+
 let private simulate (build: Build) (shuffle: Card[]) : float * (Card list * Scoring.ScoreBreakdown) list =
-    let score plays handsLeftAfter discardsLeft played held =
+    let situation plays handsLeftAfter discardsLeft =
         // the card pays on the hands N, N+6, ... from now; the engine reads "Active!" as the paying hand
         let hand = build.Hands - 1 - handsLeftAfter
 
@@ -44,15 +54,50 @@ let private simulate (build: Build) (shuffle: Card[]) : float * (Card list * Sco
             else
                 joker
 
+        { build.Situation with
+            Jokers = build.Jokers |> List.map counted
+            HandsLeft = handsLeftAfter
+            DiscardsLeft = discardsLeft
+            HandPlays = plays }
+
+    let score plays handsLeftAfter discardsLeft played held =
         Scoring.scoreWith
-            { build.Situation with
-                Jokers = build.Jokers |> List.map counted
-                HandsLeft = handsLeftAfter
-                DiscardsLeft = discardsLeft
-                HandPlays = plays }
+            (situation plays handsLeftAfter discardsLeft)
             { Played = played
               Held = held
               Levels = build.Levels }
+
+    let pick plays (input: Search.Input) =
+        let chosen =
+            network
+            |> Option.bind (fun net ->
+                PlayNet.choose
+                    net
+                    (situation plays (input.HandsLeft - 1) input.DiscardsLeft)
+                    (input.Hand |> List.map snd)
+                    build.Levels)
+
+        match network, chosen with
+        | Some _, Some(positions, total, _) ->
+            let played = positions |> List.map (fun p -> snd input.Hand[p])
+
+            let held =
+                input.Hand
+                |> List.indexed
+                |> List.filter (fun (p, _) -> not (List.contains p positions))
+                |> List.map (snd >> snd)
+
+            let breakdown = input.Score (input.HandsLeft - 1) input.DiscardsLeft played held
+            Interlocked.Increment(&counts[0]) |> ignore
+
+            if breakdown.Total <> total then
+                Interlocked.Increment(&counts[2]) |> ignore
+
+            positions |> List.map (fun p -> fst input.Hand[p]), played, breakdown
+        | Some _, None ->
+            Interlocked.Increment(&counts[1]) |> ignore
+            (Search.plays input).Head
+        | None, _ -> (Search.plays input).Head
 
     let draw (kept: Card list) taken =
         let count = min (build.HandSize - kept.Length) (shuffle.Length - taken)
@@ -65,7 +110,7 @@ let private simulate (build: Build) (shuffle: Card[]) : float * (Card list * Sco
         positions |> List.sortBy (fun i -> Rank.id hand[i].Rank, i) |> List.truncate 5
 
     // the redraw sample starts n cards past the next card while enough of the shuffle remains
-    let discard (hand: Card list) (best: Scoring.ScoreBreakdown) taken (input: Search.Input) =
+    let discard (hand: Card list) (best: Scoring.ScoreBreakdown) taken plays (input: Search.Input) =
         let left = shuffle.Length - taken
         let plain (c: Card) = { c with Enhancement = None }
 
@@ -101,7 +146,7 @@ let private simulate (build: Build) (shuffle: Card[]) : float * (Card list * Sco
                     Hand = List.indexed (kept @ fresh)
                     DiscardsLeft = input.DiscardsLeft - 1 }
 
-            let _, _, b = (Search.plays redrawn).Head
+            let _, _, b = pick plays redrawn
             b.Total
 
         let candidates =
@@ -131,9 +176,9 @@ let private simulate (build: Build) (shuffle: Card[]) : float * (Card list * Sco
                   RedrawSamples = 0
                   Rollouts = 0 }
 
-            let positions, played, best = (Search.plays input).Head
+            let positions, played, best = pick plays input
 
-            match (if discardsLeft > 0 && taken < shuffle.Length then discard hand best taken input else None) with
+            match (if discardsLeft > 0 && taken < shuffle.Length then discard hand best taken plays input else None) with
             | Some drop ->
                 let next, taken = draw (without hand drop) taken
                 play next taken handsLeft (discardsLeft - 1) plays total hands

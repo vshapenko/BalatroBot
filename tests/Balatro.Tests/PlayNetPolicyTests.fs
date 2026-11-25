@@ -5,7 +5,10 @@ open System.Diagnostics
 open System.IO
 open System.Text.Json
 open Xunit
+open Balatro.Core
+open Balatro.Core.Domain
 open Balatro.Bot
+open Balatro.Tests.HandsTests
 
 let private net = lazy (PlayNet.load (AppContext.BaseDirectory + "nn/playnet.json"))
 
@@ -84,3 +87,47 @@ let ``timing of the network choice`` () =
         |> Array.sort
 
     printfn "PlayNet.choose steady state median %.3f ms, min %.3f ms over 60 calls" times[30] times[0]
+
+[<Fact>]
+let ``shop round score with the network equals the search score and counts picks`` () =
+    let deck =
+        [ for suit in [ Spades; Hearts; Clubs; Diamonds ] do
+              for rank in [ Two; Three; Four; Five; Six; Seven; Eight; Nine; Ten; Jack; Queen; King; Ace ] do
+                  yield card rank suit ]
+
+    let build slots : Shop.Build =
+        { Jokers = []
+          Levels =
+            [ FlushFive
+              FlushHouse
+              FiveOfAKind
+              StraightFlush
+              FourOfAKind
+              FullHouse
+              Flush
+              Straight
+              ThreeOfAKind
+              TwoPair
+              Pair
+              HighCard ]
+            |> List.map (fun t -> t, handLevel t 1)
+            |> Map.ofList
+          Deck = deck
+          HandSize = 8
+          Hands = 4
+          Situation = { Jokers.Situation.empty with JokerSlots = slots } }
+
+    // the slot count is not scored, but it keeps the second call off the cached first one
+    let reference = Shop.roundScore 100 4 (build 5)
+
+    let withNet =
+        try
+            Shop.useNetwork (Some net.Value)
+            Shop.roundScore 100 4 (build 6)
+        finally
+            Shop.useNetwork None
+
+    let picks, _, differs = Shop.networkCounts ()
+    Assert.Equal(reference, withNet)
+    Assert.True(picks > 0)
+    Assert.Equal(0, differs)
