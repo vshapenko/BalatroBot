@@ -4,6 +4,7 @@ open System
 open System.IO
 open System.Text.Json
 open Balatro.Core.Domain
+open Balatro.Core.Jokers
 
 // A sparse matrix grouped by row or by column: group g holds Index/Vals from Start[g] to Start[g + 1] - 1
 type private Sparse =
@@ -21,13 +22,18 @@ type private Limits =
     { Mult: float
       Chips: float
       Weight: int
-      Glass: int }
+      Glass: int
+      Jokers: int
+      Value: float
+      Left: int
+      Plays: int }
 
 type Net =
     private
         { D: int
           Loops: int
           Limits: Limits
+          Keys: Map<string, string>
           Dims: Map<string, int>
           Heads: Head[]
           W1: Sparse
@@ -110,7 +116,12 @@ let load (path: string) : Net =
         { Mult = limits.GetProperty("mult").GetDouble()
           Chips = limits.GetProperty("chips").GetDouble()
           Weight = limits.GetProperty("weight").GetInt32()
-          Glass = limits.GetProperty("glass").GetInt32() }
+          Glass = limits.GetProperty("glass").GetInt32()
+          Jokers = limits.GetProperty("jokers").GetInt32()
+          Value = limits.GetProperty("value").GetDouble()
+          Left = limits.GetProperty("left").GetInt32()
+          Plays = limits.GetProperty("plays").GetInt32() }
+      Keys = [ for p in root.GetProperty("keys").EnumerateObject() -> p.Name, p.Value.GetString() ] |> Map.ofList
       Dims = [ for p in root.GetProperty("dims").EnumerateObject() -> p.Name, p.Value.GetInt32() ] |> Map.ofList
       Heads = [| for h in root.GetProperty("heads").EnumerateArray() -> head h |]
       W1 = sparse d true (root.GetProperty "W1")
@@ -131,36 +142,52 @@ let private subsetsOf n =
 
 let private isWhole (v: float) = v = Math.Floor v
 
-// Passes of the Polychrome and Steel effects, and of the Glass effect, that a hand can make; a Red Seal doubles a pass
-let private passes (hand: Card list) =
+// Passes of the Polychrome and Steel effects, and of the Glass effect, that a hand can make; a Red Seal doubles a pass.
+// A Polychrome joker is one Polychrome pass
+let private passes (hand: Card list) (jokers: Joker list) =
     let count (c: Card) (flags: bool list) =
         (if c.Seal = Some Seal.Red then 2 else 1) * (flags |> List.filter id |> List.length)
 
-    hand |> List.sumBy (fun c -> count c [ c.Edition = Some Polychrome; c.Enhancement = Some Enhancement.Steel ]),
+    let weight =
+        hand |> List.sumBy (fun c -> count c [ c.Edition = Some Polychrome; c.Enhancement = Some Enhancement.Steel ])
+
+    weight + (jokers |> List.filter (fun j -> j.Edition = Some Polychrome) |> List.length),
     hand |> List.sumBy (fun c -> count c [ c.Enhancement = Some Enhancement.Glass ])
 
-let private inScope (net: Net) (hand: Card list) (levels: Map<HandType, HandLevel>) =
-    let weight, glass = passes hand
+let private inScope (net: Net) (situation: Situation) (hand: Card list) (levels: Map<HandType, HandLevel>) =
+    let weight, glass = passes hand situation.Jokers
+    let limits = net.Limits
+    let counted (n: int) (limit: int) = n >= 0 && n <= limit
 
     not hand.IsEmpty
     && hand.Length <= cardSlots
     && hand |> List.forall (fun c -> not c.Debuffed)
-    && weight <= net.Limits.Weight
-    && glass <= net.Limits.Glass
+    && weight <= limits.Weight
+    && glass <= limits.Glass
+    && situation.Jokers.Length <= limits.Jokers
+    && situation.Jokers
+       |> List.forall (fun j ->
+           let value = Option.defaultValue 0.0 j.Value
+           not j.Debuffed && net.Keys.ContainsKey j.Key && isWhole value && value >= 0.0 && value <= limits.Value)
+    && situation.Boss.IsNone
+    && not situation.Balance
+    && counted situation.HandsLeft limits.Left
+    && counted situation.DiscardsLeft limits.Left
+    && situation.HandPlays |> Map.forall (fun _ (run, round) -> counted run limits.Plays && counted round limits.Plays)
     && handTypes
        |> List.forall (fun (t, _) ->
            match Map.tryFind t levels with
            | Some level ->
                isWhole level.Mult
                && level.Mult >= 1.0
-               && level.Mult <= net.Limits.Mult
+               && level.Mult <= limits.Mult
                && isWhole level.Chips
                && level.Chips >= 0.0
-               && level.Chips <= net.Limits.Chips
+               && level.Chips <= limits.Chips
            | None -> false)
 
 // Tokens: the eight card slots (empty ones blank), 5 nulls, one per subset of the cards, the selector
-let private encode (net: Net) (hand: Card list) (levels: Map<HandType, HandLevel>) : float[][] =
+let private encode (net: Net) (situation: Situation) (hand: Card list) (levels: Map<HandType, HandLevel>) : float[][] =
     let dim (name: string) = net.Dims[name]
 
     let token () =
@@ -207,6 +234,20 @@ let private encode (net: Net) (hand: Card list) (levels: Map<HandType, HandLevel
             for t, name in handTypes do
                 x[dim $"C_{name}"] <- levels[t].Chips
                 x[dim $"M_{name}"] <- levels[t].Mult
+
+                let run, round = Map.tryFind t situation.HandPlays |> Option.defaultValue (0, 0)
+                x[dim $"run_{name}"] <- float run
+                x[dim $"rnd_{name}"] <- float round
+
+            x[dim "hl"] <- float situation.HandsLeft
+            x[dim "dl"] <- float situation.DiscardsLeft
+
+            situation.Jokers
+            |> List.iteri (fun i joker ->
+                let slot = i + 1
+                x[dim $"j{slot}_k_{net.Keys[joker.Key]}"] <- 1.0
+                joker.Edition |> Option.iter (fun e -> x[dim $"j{slot}_e_{e}"] <- 1.0)
+                x[dim $"j{slot}_v"] <- Option.defaultValue 0.0 joker.Value)
 
             x)
         |> List.ofArray
@@ -327,11 +368,16 @@ let private block (net: Net) (xs: float[][]) (delta: float[][]) (hidden: float[]
         for r in 0 .. net.D - 1 do
             x[r] <- x[r] + written[r]
 
-let choose (net: Net) (hand: Card list) (levels: Map<HandType, HandLevel>) : (int list * float * HandType) option =
-    if not (inScope net hand levels) then
+let choose
+    (net: Net)
+    (situation: Situation)
+    (hand: Card list)
+    (levels: Map<HandType, HandLevel>)
+    : (int list * float * HandType) option =
+    if not (inScope net situation hand levels) then
         None
     else
-        let xs = encode net hand levels
+        let xs = encode net situation hand levels
         let delta = Array.init xs.Length (fun _ -> Array.zeroCreate net.D)
         let hidden = Array.zeroCreate net.B1.Length
         let written = Array.zeroCreate net.D
