@@ -1,3 +1,4 @@
+import itertools
 import json
 import math
 from fractions import Fraction
@@ -41,6 +42,7 @@ TYPES = [
 ]
 RANKS = list(range(2, 15))
 SUITS = ["S", "H", "C", "D"]
+PARTNER = {"S": "C", "C": "S", "H": "D", "D": "H"}
 ENHANCEMENTS = ["Bonus", "Mult", "Wild", "Glass", "Steel", "Stone", "Gold", "Lucky"]
 EDITIONS = ["Foil", "Holo", "Polychrome", "Negative"]
 SEALS = ["Red", "Blue", "Gold", "Purple"]
@@ -158,6 +160,13 @@ FACTOR_KEYS = [
 OBELISK_KEY = "j_obelisk"
 COPY_KEYS = ["j_blueprint", "j_brainstorm"]
 MIDAS_KEY = "j_midas_mask"
+RULE_KEYS = [
+    "j_four_fingers",
+    "j_shortcut",
+    "j_smeared",
+    "j_splash",
+    "j_pareidolia",
+]
 BASEBALL_KEY = "j_baseball"
 SITUATION_KEYS = ["j_banner", "j_mystic_summit", "j_supernova"]
 
@@ -268,6 +277,10 @@ INERT_KEYS = [
 # JokerRegistry.uncommon: Baseball Card multiplies by 1.5 for each of these in the other slots
 UNCOMMON = {
     "j_stencil",
+    "j_four_fingers",
+    "j_pareidolia",
+    "j_shortcut",
+    "j_smeared",
     "j_mime",
     "j_ceremonial",
     "j_marble",
@@ -346,6 +359,7 @@ KEY_DIMS = {
         OBELISK_KEY,
         *COPY_KEYS,
         MIDAS_KEY,
+        *RULE_KEYS,
     ]
 }
 KEY_CLASSES = sorted(set(KEY_DIMS.values()))
@@ -354,6 +368,10 @@ UNCOMMON_KEYS = sorted(key for key in KEY_DIMS if key in UNCOMMON)
 
 STAGES = [
     ("in", "input features, set by the encoder"),
+    (
+        "clock",
+        "the number of loops run, and the bits that say a stage's inputs have settled",
+    ),
     (
         "card",
         "per-card features: effective rank, suit matches, rank sets, chip value parts",
@@ -371,10 +389,18 @@ STAGES = [
         "per slot: the key, value, factor, text bits of the joker it acts as; whether a Midas Mask is held; how many slots act as Baseball Card",
     ),
     (
-        "midas",
-        "per scoring card: the chips, enhancements and suit matches it has once a Midas Mask has turned face cards Gold",
+        "rules",
+        "which rule jokers are held (Four Fingers, Shortcut, Smeared, Splash, Pareidolia), read from the raw keys",
     ),
-    ("pair", "rank equalities, rank gaps, suit counts"),
+    (
+        "midas",
+        "per card: face as isFace sees it, and the chips, enhancements, ranks and suit matches it has once a Midas Mask has turned face cards Gold",
+    ),
+    ("pair", "rank equalities, rank orders, suit matches as flushCards sees them"),
+    (
+        "patterns",
+        "flush suits and cards, which ranks are present, every run of 4 or 5 ranks a straight can take, the ranks and cards in the straight",
+    ),
     (
         "shape",
         "rank structure of the played cards, flush, straight, scoring-card hints",
@@ -747,14 +773,78 @@ def stage_effective(b: Builder) -> None:
     )
 
 
+def stage_clock(b: Builder) -> None:
+    b.dim("tick", "clock", "loops run so far: the MLP adds 1 every loop", 0)
+    b.add("tick", b.unit({"one": 1.0}), 1.0)
+
+
+# 1 once every dim in names has its final value: a gate that fires on half-settled inputs would feed a wrong mult into the folds
+def settled(b: Builder, names: list[str]) -> str:
+    loop = max(b.ready[name] for name in names)
+    name = f"go_{loop}"
+    if name not in b.index:
+        b.define(
+            name,
+            "clock",
+            f"1 from loop {loop + 1} on, when the dims ready at loop {loop} are final",
+            at_least(b, {"tick": 1.0}, float(loop)),
+        )
+        b.ready[name] = loop + 1
+    return name
+
+
+def stage_rules(b: Builder) -> None:
+    rules = [
+        ("r_ff", "j_four_fingers", "Four Fingers: flushes and straights need 4 cards"),
+        ("r_sh", "j_shortcut", "Shortcut: a straight may skip one missing rank"),
+        (
+            "r_sm",
+            "j_smeared",
+            "Smeared: Hearts and Diamonds are one suit, Spades and Clubs one",
+        ),
+        ("r_sp", "j_splash", "Splash: every played card scores"),
+        ("r_pa", "j_pareidolia", "Pareidolia: every card is a face card"),
+    ]
+    for name, key, meaning in rules:
+        held = total_of([raw(j, key) for j in range(1, JOKERS + 1)])
+        b.define(
+            name,
+            "rules",
+            f"1 when a joker slot holds {key} itself, a copy does not count ({meaning})",
+            at_least(b, held, 1.0),
+        )
+
+
 def stage_midas(b: Builder) -> None:
     for k in range(1, POSITIONS + 1):
+        b.define(
+            f"face_{k}",
+            "midas",
+            f"1 when card {k} is a face card as isFace sees it: Jack, Queen or King, or any card with Pareidolia",
+            [
+                (b.unit({f"P{k}_fc": 1.0}), 1.0),
+                (b.unit({"r_pa": 1.0, f"P{k}_nl": -1.0, f"P{k}_fc": -1.0}), 1.0),
+            ],
+        )
         mg = f"mg_{k}"
         b.define(
             mg,
             "midas",
             f"1 when card {k} is a face card and a Midas Mask turns it Gold",
-            [(b.unit({f"P{k}_fc": 1.0, "mid": 1.0}, -1.0), 1.0)],
+            [(b.unit({f"face_{k}": 1.0, "mid": 1.0}, -1.0), 1.0)],
+        )
+        sg = f"sg_{k}"
+        b.define(
+            sg,
+            "midas",
+            f"1 when card {k} is a Stone that a Midas Mask turns Gold (Pareidolia makes it a face card)",
+            [(b.unit({f"P{k}_st": 1.0, mg: 1.0}, -1.0), 1.0)],
+        )
+        b.define(
+            f"Qst_{k}",
+            "midas",
+            f"1 when card {k} is a Stone once a Midas Mask has acted",
+            [(b.unit({f"P{k}_st": 1.0, sg: -1.0}), 1.0)],
         )
         b.define(
             f"Q{k}_cv",
@@ -763,6 +853,8 @@ def stage_midas(b: Builder) -> None:
             [
                 (b.unit({f"P{k}_cv": 1.0}), 1.0),
                 (b.unit({f"P{k}_bo": 1.0, mg: 1.0}, -1.0), -30.0),
+                (b.unit({sg: 1.0}), -50.0),
+                (b.unit({f"P{k}_unom": 1.0, sg: 11.0}, -11.0), 1.0),
             ],
         )
         for name, meaning in (
@@ -777,23 +869,46 @@ def stage_midas(b: Builder) -> None:
                 [(b.unit({f"P{k}_{name}": 1.0, mg: -1.0}), 1.0)],
             )
         for s in SUITS:
-            own = {f"P{k}_wd": 1.0, mg: 1.0, f"P{k}_su_{s}": 1.0}
+            turned = {f"P{k}_wd": 1.0, mg: 1.0, f"P{k}_su_{s}": 1.0}
+            stone = {sg: 1.0, f"P{k}_us_{s}": 1.0}
             b.define(
                 f"Q{k}_own_{s}",
                 "midas",
-                f"1 for a plain card of suit {s}, a Gold face card counting as plain",
+                f"1 for a plain card of suit {s}, a Gold card counting as plain",
                 [
                     (b.unit({f"P{k}_own_{s}": 1.0}), 1.0),
-                    (b.unit(own, -2.0), 1.0),
+                    (b.unit(turned, -2.0), 1.0),
+                    (b.unit(stone, -1.0), 1.0),
                 ],
             )
+        for s in SUITS:
             match = {f"P{k}_wd": 1.0, f"P{k}_su_{s}": -1.0, mg: -1.0}
+            stone = {sg: 1.0, f"P{k}_us_{s}": 1.0}
+            partner = {f"Q{k}_own_{PARTNER[s]}": 1.0, "r_sm": 1.0}
             b.define(
                 f"Q{k}_sm_{s}",
                 "midas",
-                f"1 when card {k} matches suit {s} once a Midas Mask has acted",
-                [(b.unit({f"P{k}_su_{s}": 1.0}), 1.0), (b.unit(match), 1.0)],
+                f"1 when card {k} matches suit {s} as isSuit sees it once a Midas Mask has acted",
+                [
+                    (b.unit({f"P{k}_su_{s}": 1.0}), 1.0),
+                    (b.unit(match), 1.0),
+                    (b.unit(stone, -1.0), 1.0),
+                    (b.unit(partner, -1.0), 1.0),
+                ],
             )
+        for name in ("kq", "fib", "ev", "od", "wk", "hk", "ac"):
+            b.define(
+                f"Q{k}_{name}",
+                "midas",
+                f"1 when card {k} is in rank set {name} once a Midas Mask has acted: a Stone has none unless it was turned Gold",
+                [(b.unit({f"P{k}_{name}": 1.0, f"Qst_{k}": -1.0}), 1.0)],
+            )
+        b.define(
+            f"Q{k}_rr",
+            "midas",
+            f"rank id of card {k} once a Midas Mask has acted, 0 for a Stone",
+            [(b.unit({f"P{k}_urr": 1.0, f"Qst_{k}": -14.0}), 1.0)],
+        )
 
 
 def stage_factors(b: Builder) -> None:
@@ -911,35 +1026,27 @@ def stage_card(b: Builder) -> None:
         [(b.unit({**rank_id, "enh_Stone": -14.0}), 1.0)],
     )
     b.define(
-        "rkA",
-        "card",
-        "1 on a non-Stone Ace",
-        [(b.unit({"rank_14": 1.0, "enh_Stone": -1.0}), 1.0)],
-    )
-    b.define(
         "nomNS",
         "card",
         "nominal of the card, 0 for a Stone",
         [(b.unit({"nominal": 1.0, "enh_Stone": -11.0}), 1.0)],
     )
+    # a Stone never counts as a face card, King or Queen; the other sets keep Stone because a Midas Mask can turn it Gold
     rank_sets = {
-        "fc": ([11, 12, 13], "a face card: Jack, Queen or King, never Stone"),
-        "kg": ([13], "a King, never Stone"),
-        "qn": ([12], "a Queen, never Stone"),
-        "fib": ([14, 2, 3, 5, 8], "an Ace, 2, 3, 5 or 8, never Stone"),
-        "ev": ([2, 4, 6, 8, 10], "a 2, 4, 6, 8 or 10, never Stone"),
-        "od": ([3, 5, 7, 9, 14], "a 3, 5, 7, 9 or Ace, never Stone"),
-        "wk": ([10, 4], "a 10 or 4, never Stone"),
-        "hk": ([2, 3, 4, 5], "a 2, 3, 4 or 5, never Stone"),
+        "fc": ([11, 12, 13], True, "a face card: Jack, Queen or King, never Stone"),
+        "kg": ([13], True, "a King, never Stone"),
+        "qn": ([12], True, "a Queen, never Stone"),
+        "fib": ([14, 2, 3, 5, 8], False, "an Ace, 2, 3, 5 or 8, Stone included"),
+        "ev": ([2, 4, 6, 8, 10], False, "a 2, 4, 6, 8 or 10, Stone included"),
+        "od": ([3, 5, 7, 9, 14], False, "a 3, 5, 7, 9 or Ace, Stone included"),
+        "wk": ([10, 4], False, "a 10 or 4, Stone included"),
+        "hk": ([2, 3, 4, 5], False, "a 2, 3, 4 or 5, Stone included"),
     }
-    for name, (ranks, meaning) in rank_sets.items():
+    for name, (ranks, not_stone, meaning) in rank_sets.items():
         expr = {f"rank_{r}": 1.0 for r in ranks}
-        b.define(
-            name,
-            "card",
-            f"1 on {meaning}",
-            [(b.unit({**expr, "enh_Stone": -1.0}), 1.0)],
-        )
+        if not_stone:
+            expr["enh_Stone"] = -1.0
+        b.define(name, "card", f"1 on {meaning}", [(b.unit(expr), 1.0)])
     black = {"enh_Wild": 1.0, "suit_S": 1.0, "suit_C": 1.0, "enh_Stone": -3.0}
     b.define(
         "bk",
@@ -979,10 +1086,6 @@ def fetched(k: int) -> dict[str, tuple[Expr, str]]:
             {"rr": 1.0, **sentinel},
             "rank id; a distinct large value for Stone and null",
         ),
-        "rl": (
-            {"rr": 1.0, "rkA": -13.0, **sentinel},
-            "rank id with the Ace low; a distinct large value for Stone and null",
-        ),
         "rr": ({"rr": 1.0}, "rank id, 0 for Stone and null"),
         "cv": (
             {"nomNS": 1.0, "enh_Stone": 50.0, "enh_Bonus": 30.0, "ed_Foil": 50.0},
@@ -994,15 +1097,23 @@ def fetched(k: int) -> dict[str, tuple[Expr, str]]:
         "po": ({"ed_Polychrome": 1.0}, "1 for the Polychrome edition"),
         "red": ({"seal_Red": 1.0}, "1 for the Red Seal"),
         "st": ({"enh_Stone": 1.0}, "1 for the Stone enhancement"),
-        "ac": ({"rkA": 1.0}, "1 for a non-Stone Ace"),
+        "ac": ({"rank_14": 1.0}, "1 for an Ace, Stone included"),
         "ns": ({"isCard": 1.0, "enh_Stone": -1.0}, "1 for a card that is not a Stone"),
         "fc": ({"fc": 1.0}, "1 for a face card"),
-        "kq": ({"kg": 1.0, "qn": 1.0}, "1 for a King or Queen"),
-        "fib": ({"fib": 1.0}, "1 for an Ace, 2, 3, 5 or 8"),
-        "ev": ({"ev": 1.0}, "1 for a 2, 4, 6, 8 or 10"),
-        "od": ({"od": 1.0}, "1 for a 3, 5, 7, 9 or Ace"),
-        "wk": ({"wk": 1.0}, "1 for a 10 or 4"),
-        "hk": ({"hk": 1.0}, "1 for a 2, 3, 4 or 5"),
+        "kq": (
+            {"rank_12": 1.0, "rank_13": 1.0},
+            "1 for a King or Queen, Stone included",
+        ),
+        "fib": ({"fib": 1.0}, "1 for an Ace, 2, 3, 5 or 8, Stone included"),
+        "ev": ({"ev": 1.0}, "1 for a 2, 4, 6, 8 or 10, Stone included"),
+        "od": ({"od": 1.0}, "1 for a 3, 5, 7, 9 or Ace, Stone included"),
+        "wk": ({"wk": 1.0}, "1 for a 10 or 4, Stone included"),
+        "hk": ({"hk": 1.0}, "1 for a 2, 3, 4 or 5, Stone included"),
+        "urr": (
+            {f"rank_{r}": float(r) for r in RANKS},
+            "rank id, Stone included",
+        ),
+        "unom": ({"nominal": 1.0}, "nominal chip value, Stone included"),
         "nl": ({"isNull": 1.0}, "1 for a null token: the card slot is empty"),
         "wd": ({"enh_Wild": 1.0}, "1 for the Wild enhancement"),
         "bo": ({"enh_Bonus": 1.0}, "1 for the Bonus enhancement"),
@@ -1022,6 +1133,11 @@ def fetched(k: int) -> dict[str, tuple[Expr, str]]:
         values[f"su_{s}"] = (
             {f"su_{s}": 1.0},
             f"1 for a card of suit {s} that is not a Stone",
+        )
+    for s in SUITS:
+        values[f"us_{s}"] = (
+            {f"suit_{s}": 1.0},
+            f"1 for a card of suit {s}, Stone included",
         )
     return values
 
@@ -1103,15 +1219,6 @@ def stage_pairs(b: Builder) -> None:
             f"1 when cards {k} and {m} have the same rank",
             equals(b, gap, 0.0),
         )
-        for tag, key in (("H", "rs"), ("L", "rl")):
-            gap = {f"P{k}_{key}": 1.0, f"P{m}_{key}": -1.0}
-            far = at_least(b, gap, 5.0) + at_least(b, scaled(gap, -1.0), 5.0)
-            b.define(
-                f"far{tag}_{k}_{m}",
-                "pair",
-                f"1 when cards {k} and {m} are 5 or more ranks apart ({tag})",
-                far,
-            )
     for k, m in ORDERED:
         gap = {f"P{m}_rr": 1.0, f"P{k}_rr": -1.0}
         b.define(
@@ -1120,13 +1227,106 @@ def stage_pairs(b: Builder) -> None:
             f"1 when card {m} outranks card {k}",
             at_least(b, gap, 1.0),
         )
+    for k in range(1, POSITIONS + 1):
+        for s in SUITS:
+            b.define(
+                f"Z{k}_{s}",
+                "pair",
+                f"1 when card {k} matches suit {s} as matchesSuit sees it, before any Midas Mask",
+                [
+                    (b.unit({f"P{k}_sm_{s}": 1.0}), 1.0),
+                    (b.unit({f"P{k}_own_{PARTNER[s]}": 1.0, "r_sm": 1.0}, -1.0), 1.0),
+                ],
+            )
+
+
+# every set of ranks a straight can take: 4 or 5 ranks, each next one 1 above, or 2 above for the gap Shortcut allows
+def runs(length: int) -> list[tuple[int, ...]]:
+    found = []
+    for steps in itertools.product((1, 2), repeat=length - 1):
+        span = sum(steps)
+        for first in range(1, 14 - span + 1):
+            ids = [first]
+            for step in steps:
+                ids.append(ids[-1] + step)
+            found.append(tuple(ids))
+    return found
+
+
+def stage_patterns(b: Builder) -> None:
+    cards = range(1, POSITIONS + 1)
     for s in SUITS:
-        count = total_of([f"P{k}_sm_{s}" for k in range(1, POSITIONS + 1)])
+        count = {**{f"Z{k}_{s}": 1.0 for k in cards}, "r_ff": 1.0}
         b.define(
-            f"fl_{s}",
-            "pair",
-            f"1 when all five cards match suit {s}",
-            [(b.unit(count, -4.0), 1.0)],
+            f"flq_{s}",
+            "patterns",
+            f"1 when at least 5 cards match suit {s}, or 4 with Four Fingers",
+            at_least(b, count, 5.0),
+        )
+    for n, s in enumerate(SUITS):
+        earlier = {f"flq_{t}": -1.0 for t in SUITS[:n]}
+        b.define(
+            f"fls_{s}",
+            "patterns",
+            f"1 when {s} is the first suit in the order of Hands.flushCards with enough matching cards",
+            [(b.unit({f"flq_{s}": 1.0, **earlier}), 1.0)],
+        )
+    for k in cards:
+        b.define(
+            f"fcd_{k}",
+            "patterns",
+            f"1 when card {k} is a card of the flush",
+            [(b.unit({f"fls_{s}": 1.0, f"Z{k}_{s}": 1.0}, -1.0), 1.0) for s in SUITS],
+        )
+    for k in cards:
+        for r in RANKS:
+            b.define(
+                f"rk_{k}_{r}",
+                "patterns",
+                f"1 when card {k} has rank id {r}, never a Stone",
+                equals(b, {f"P{k}_rr": 1.0}, float(r)),
+            )
+    for r in RANKS:
+        b.define(
+            f"pv_{r}",
+            "patterns",
+            f"1 when some card has rank id {r}",
+            at_least(b, total_of([f"rk_{k}_{r}" for k in cards]), 1.0),
+        )
+    patterns = []
+    for length in (4, 5):
+        for ids in runs(length):
+            gap = any(y - x == 2 for x, y in zip(ids, ids[1:]))
+            ranks = [14 if i == 1 else i for i in ids]
+            expr = {f"pv_{r}": 1.0 for r in ranks}
+            expr["r_ff"] = 1.0 if length == 4 else -1.0
+            if gap:
+                expr["r_sh"] = 1.0
+            name = f"pt_{'_'.join(map(str, ids))}"
+            meaning = f"1 when ranks {ids} are all present and the rules allow a straight of {length} cards on them (Ace is 1 or 14)"
+            bias = -(4.0 + (1.0 if gap else 0.0))
+            b.define(name, "patterns", meaning, [(b.unit(expr, bias), 1.0)])
+            patterns.append((name, ranks))
+    for r in RANKS:
+        names = [name for name, ranks in patterns if r in ranks]
+        b.define(
+            f"cov_{r}",
+            "patterns",
+            f"1 when rank id {r} is in a straight",
+            at_least(b, total_of(names), 1.0),
+        )
+    b.define(
+        "straight",
+        "patterns",
+        "1 when the cards hold a straight",
+        at_least(b, total_of([name for name, _ in patterns]), 1.0),
+    )
+    for k in cards:
+        b.define(
+            f"ic_{k}",
+            "patterns",
+            f"1 when card {k} is a card of the straight",
+            [(b.unit({f"rk_{k}_{r}": 1.0, f"cov_{r}": 1.0}, -1.0), 1.0) for r in RANKS],
         )
 
 
@@ -1146,26 +1346,11 @@ def stage_shape(b: Builder) -> None:
             f"1 when the rank equalities total {count}",
             equals(b, same, float(count)),
         )
-    flushes = total_of([f"fl_{s}" for s in SUITS])
     b.define(
         "flush",
         "shape",
-        "1 when all five cards share a suit",
-        at_least(b, flushes, 1.0),
-    )
-    straight = []
-    for tag in ("H", "L"):
-        apart = total_of([f"far{tag}_{k}_{m}" for k, m in PAIRS])
-        aces = total_of([f"P{k}_ac" for k in range(1, POSITIONS + 1)])
-        # an Ace-low run needs an Ace; 10 * same rules out two Aces
-        start = {"H": ({}, 1.0), "L": (aces, 0.0)}[tag]
-        expr = merged(start[0], scaled(same, -10.0), scaled(apart, -1.0))
-        straight.append((b.unit(expr, start[1]), 1.0))
-    b.define(
-        "straight",
-        "shape",
-        "1 when five different ranks run in a row, Ace high or low",
-        straight,
+        "1 when the cards hold a flush",
+        at_least(b, total_of([f"flq_{s}" for s in SUITS]), 1.0),
     )
     for k in range(1, POSITIONS + 1):
         mates = total_of(
@@ -1207,7 +1392,7 @@ def stage_type(b: Builder) -> None:
         "Straight": unit({"straight": 1.0, "flush": -1.0}),
         "ThreeOfAKind": unit({"three": 1.0, "flush": -1.0}),
         "TwoPair": unit({"tp": 1.0, "flush": -1.0}),
-        "Pair": unit({"pair": 1.0, "flush": -1.0}),
+        "Pair": unit({"pair": 1.0, "flush": -1.0, "straight": -1.0}),
         "HighCard": unit(total_of(rank + ["flush", "straight"], -1.0), 1.0),
     }
     for t in TYPES:
@@ -1215,18 +1400,44 @@ def stage_type(b: Builder) -> None:
 
 
 def stage_score(b: Builder) -> None:
-    whole = [
-        "FlushFive",
-        "FlushHouse",
-        "FiveOfAKind",
-        "StraightFlush",
-        "FullHouse",
-        "Flush",
-        "Straight",
-    ]
+    whole = ["FlushFive", "FlushHouse", "FiveOfAKind", "FullHouse"]
+    same_rank = ["FourOfAKind", "ThreeOfAKind", "TwoPair", "Pair"]
     for k in range(1, POSITIONS + 1):
+        b.define(
+            f"xf_{k}",
+            "score",
+            f"1 when card {k} is a card of the flush and the hand scores the flush: Flush or Straight Flush",
+            [
+                (b.unit({f"t_{t}": 1.0, f"fcd_{k}": 1.0}, -1.0), 1.0)
+                for t in ("Flush", "StraightFlush")
+            ],
+        )
+        b.define(
+            f"xs_{k}",
+            "score",
+            f"1 when card {k} is a card of the straight and the hand scores the straight: Straight or Straight Flush",
+            [
+                (b.unit({f"t_{t}": 1.0, f"ic_{k}": 1.0}, -1.0), 1.0)
+                for t in ("Straight", "StraightFlush")
+            ],
+        )
+        b.define(
+            f"xm_{k}",
+            "score",
+            f"1 when card {k} shares its rank with another card and the hand type scores the rank groups",
+            [
+                (
+                    b.unit(
+                        {f"pl_{k}": 1.0, **total_of([f"t_{t}" for t in same_rank])},
+                        -1.0,
+                    ),
+                    1.0,
+                )
+            ],
+        )
         joined = merged(
-            {f"P{k}_st": 1.0, f"pl_{k}": 1.0}, total_of([f"t_{t}" for t in whole])
+            {f"P{k}_st": 1.0, f"xm_{k}": 1.0, f"xf_{k}": 1.0, f"xs_{k}": 1.0},
+            total_of([f"t_{t}" for t in whole]),
         )
         terms = [
             (b.unit(joined), 1.0),
@@ -1234,10 +1445,19 @@ def stage_score(b: Builder) -> None:
             (b.unit({f"top_{k}": 1.0, "t_HighCard": 1.0}, -1.0), 1.0),
         ]
         b.define(
+            f"s0_{k}",
+            "score",
+            f"1 when card {k} scores by the hand type: a Stone, the cards of its groups, flush or straight, the five cards of a five-card type, or the High Card",
+            terms,
+        )
+        b.define(
             f"sc_{k}",
             "score",
-            f"1 when card {k} scores: a Stone, a rank mate, in a five-card type, or the High Card",
-            terms,
+            f"1 when card {k} scores: by the hand type, or any played card with Splash",
+            [
+                (b.unit({f"s0_{k}": 1.0}), 1.0),
+                (b.unit({"r_sp": 1.0, f"P{k}_nl": -1.0, f"s0_{k}": -1.0}), 1.0),
+            ],
         )
     for k in range(1, POSITIONS + 1):
         b.define(
@@ -1385,11 +1605,53 @@ def stage_suits(b: Builder) -> None:
     wilds = total_of([f"wd_{k}" for k in range(1, POSITIONS + 1)])
     covered = merged(total_of([f"pr_{s}" for s in SUITS]), wilds)
     b.define(
-        "fp",
+        "fpPlain",
         "suits",
-        "1 when plain suits plus Wild cards reach all four suits (Flower Pot)",
+        "1 when plain suits plus Wild cards reach all four suits (Flower Pot without Smeared)",
         at_least(b, covered, 4.0),
     )
+    # with Smeared a plain red card fills Hearts, then Diamonds, a plain black card Spades, then Clubs
+    for name, pair, meaning in (("rd", ("H", "D"), "red"), ("bl", ("S", "C"), "black")):
+        plain = total_of([f"pk_{k}_{s}" for k in range(1, POSITIONS + 1) for s in pair])
+        for n in (1, 2):
+            b.define(
+                f"{name}{n}",
+                "suits",
+                f"1 when {n} or more scoring plain cards are {meaning}",
+                at_least(b, plain, float(n)),
+            )
+    smeared = merged(total_of(["rd1", "rd2", "bl1", "bl2"]), wilds)
+    b.define(
+        "fpSmeared",
+        "suits",
+        "1 when the suits the plain cards fill under Smeared plus Wild cards reach all four (Flower Pot with Smeared)",
+        at_least(b, smeared, 4.0),
+    )
+    b.define(
+        "fp",
+        "suits",
+        "1 when Flower Pot fires",
+        [
+            (b.unit({"fpPlain": 1.0, "r_sm": -1.0}), 1.0),
+            (b.unit({"fpSmeared": 1.0, "r_sm": 1.0}, -1.0), 1.0),
+        ],
+    )
+    for s in SUITS:
+        b.define(
+            f"prc_{s}",
+            "suits",
+            f"1 when a scoring plain card covers suit {s} for Seeing Double: its own, or its partner suit with Smeared",
+            [
+                (b.unit({f"pr_{s}": 1.0}), 1.0),
+                (
+                    b.unit(
+                        {f"pr_{PARTNER[s]}": 1.0, "r_sm": 1.0, f"pr_{s}": -1.0}, -1.0
+                    ),
+                    1.0,
+                ),
+            ],
+        )
+    covered = merged(total_of([f"prc_{s}" for s in SUITS]), wilds)
     b.define(
         "sdTwo",
         "suits",
@@ -1400,7 +1662,7 @@ def stage_suits(b: Builder) -> None:
         "sdClubs",
         "suits",
         "1 when a plain Clubs card or a Wild card scores",
-        at_least(b, merged({"pr_C": 1.0}, wilds), 1.0),
+        at_least(b, merged({"prc_C": 1.0}, wilds), 1.0),
     )
     b.define(
         "sd",
@@ -1494,7 +1756,7 @@ def stage_order(b: Builder) -> None:
             f"sf_{k}",
             "order",
             f"1 when card {k} scores and is a face card",
-            [(b.unit({f"sc_{k}": 1.0, f"P{k}_fc": 1.0}, -1.0), 1.0)],
+            [(b.unit({f"sc_{k}": 1.0, f"face_{k}": 1.0}, -1.0), 1.0)],
         )
     b.define(
         "nf",
@@ -1528,9 +1790,11 @@ def stage_order(b: Builder) -> None:
         )
 
 
-# a suit match is read after a Midas Mask has acted
+# a suit match or rank set is read after a Midas Mask has acted, a face card as isFace sees it
 def card_dim(k: int, feat: str) -> str:
-    return f"Q{k}_{feat}" if feat.startswith("sm_") else f"P{k}_{feat}"
+    if feat == "fc":
+        return f"face_{k}"
+    return f"Q{k}_{feat}"
 
 
 def stage_scored(b: Builder) -> None:
@@ -1550,7 +1814,7 @@ def stage_scored(b: Builder) -> None:
                 f"rm_{j}_{k}",
                 "scored",
                 f"1 when card {k} has the rank id joker {j} names",
-                equals(b, {f"P{k}_rr": 1.0, f"etid_{j}": -1.0}, 0.0),
+                equals(b, {f"Q{k}_rr": 1.0, f"etid_{j}": -1.0}, 0.0),
             )
     for j in range(1, JOKERS + 1):
         for k in range(1, POSITIONS + 1):
@@ -1586,7 +1850,7 @@ def stage_scored(b: Builder) -> None:
                 f"tm_{j}_{k}": 1.0,
             }
             double = [
-                (b.unit({holds(j, "j_triboulet"): 1.0, f"P{k}_kq": 1.0}, -1.0), 1.0),
+                (b.unit({holds(j, "j_triboulet"): 1.0, f"Q{k}_kq": 1.0}, -1.0), 1.0),
                 (b.unit({holds(j, "j_photograph"): 1.0, f"ff_{k}": 1.0}, -1.0), 1.0),
                 (b.unit(idol, -2.0), 1.0),
             ]
@@ -1667,7 +1931,7 @@ def stage_passes(b: Builder) -> None:
     for k in range(1, POSITIONS + 1):
         terms = [(b.unit({f"sc_{k}": 1.0}), 1.0), (b.unit({f"sr_{k}": 1.0}), 1.0)]
         for j in range(1, JOKERS + 1):
-            hack = {holds(j, "j_hack"): 1.0, f"sc_{k}": 1.0, f"P{k}_hk": 1.0}
+            hack = {holds(j, "j_hack"): 1.0, f"sc_{k}": 1.0, f"Q{k}_hk": 1.0}
             dusk = {holds(j, "j_dusk"): 1.0, f"sc_{k}": 1.0, "hz": 1.0}
             terms += [
                 (b.unit({holds(j, "j_selzer"): 1.0, f"sc_{k}": 1.0}, -1.0), 1.0),
@@ -1766,11 +2030,12 @@ def stage_passes(b: Builder) -> None:
                         f"q15_{k}_{e15}": 1.0,
                         f"nq_{k}_{p}": 1.0,
                     }
+                    shape[settled(b, list(shape))] = 1.0
                     b.define(
                         f"pg_{k}_{e2}_{e15}_{p}",
                         "passes",
-                        f"1 when card {k} has {p} passes of 2^{e2} * 1.5^{e15}",
-                        [(b.unit(shape, -2.0), 1.0)],
+                        f"1 when card {k} has {p} passes of 2^{e2} * 1.5^{e15}, once the shape has settled",
+                        [(b.unit(shape, -3.0), 1.0)],
                     )
 
 
@@ -1928,11 +2193,12 @@ def stage_held(b: Builder, previous: str) -> None:
         for e15 in range(HELD_HALVES + 1):
             for p in range(1, HELD_PASSES + 1):
                 shape = {f"hq_{s}_{e15}": 1.0, f"hnq_{s}_{p}": 1.0}
+                shape[settled(b, list(shape))] = 1.0
                 b.define(
                     f"hg_{s}_{e15}_{p}",
                     "held",
-                    f"1 when slot {s} has {p} held passes of 1.5^{e15}",
-                    [(b.unit(shape, -1.0), 1.0)],
+                    f"1 when slot {s} has {p} held passes of 1.5^{e15}, once the shape has settled",
+                    [(b.unit(shape, -2.0), 1.0)],
                 )
     for s in range(CARD_SLOTS):
         gates = {
@@ -2170,7 +2436,7 @@ def readme(
         "One transformer block looped `loops` times. Every weight is set by the builder from a stated",
         "meaning; nothing is trained. It picks the play `Search.plays` would pick for a hand of 1-8 cards",
         "with any enhancement, edition and seal and up to 5 jokers (main-phase, per-card, counters, input",
-        "factors, Midas Mask, Blueprint, Brainstorm and Baseball Card), no boss and",
+        "factors, Midas Mask, Blueprint, Brainstorm, Baseball Card and the rule jokers), no boss and",
         "no Plasma Deck balance, and reports its total and hand type.",
         "Every dim is a pure function of the dims and fetches of the loop before, so after `loops` loops",
         "all of them hold their final value. Attention weights are exactly 0, 1, or 1/8, and every",
@@ -2185,6 +2451,13 @@ def readme(
         f"- input factors: the encoder derives a factor from the joker as the reference does (the value; Obelisk value + 0.2; Ramen from its text), and it counts as no effect when it is 1 or less. A factor is accepted only when 4 times it is a whole number and it is at most {FMAX}, so 1.25, 1.5, 2.5 and 8 are in scope and 1.1, 1.2, 8.25 and 9 are not (the hand is declined). Ramen, whose factor is rebuilt by subtracting 0.01 from 2 once per discarded card, is in scope only for the text X2 (no discards) and for a factor of 1 or less; every other Ramen factor is not a multiple of 1/4 and declines the hand. The net multiplies by it with shift-and-add over the {K_BITS} bits of 4 times the factor, then divides by 4",
         "- copies: Blueprint copies the slot to its right, Brainstorm the first slot, resolved as `resolve` in Scoring.fs (a chain ends at a joker that is not a copy; a loop, the last slot or a missing target gives nothing); a copy takes the key, value and text of its target and keeps its own edition; Baseball Card multiplies each Uncommon slot by 1.5 per slot that acts as it, after that slot's own effect and before its Polychrome",
         "- Midas Mask turns every scoring face card Gold before scoring: the card loses the effect of its enhancement and counts as a plain card of its suit; the hand type is read before",
+        "- rule jokers act when a slot holds the key itself (`JokerRegistry.rules` reads the raw keys, so a Blueprint or Brainstorm copying one adds nothing); the net reads each rule bit from the five key one-hots:",
+        "  - Four Fingers: a flush needs 4 matching cards, a straight 4 ranks; the scoring cards are the matching cards of the first suit in the order Spades, Hearts, Clubs, Diamonds that reaches the count, and every card whose rank is in the straight; Straight Flush scores the union",
+        "  - Shortcut: a straight may skip one missing rank between two present ranks (an Ace is rank 1 or 14); the net tests every set of 4 or 5 ranks whose steps are 1 or 2, gated by the two rule bits, and a card scores when its rank is in a set that holds",
+        "  - Smeared: a card matches the other suit of its colour, in flushes and in every suit test; Flower Pot then counts a scoring red card as Hearts, then Diamonds, a black one as Spades, then Clubs, as the reference fills the first empty suit",
+        "  - Splash: every played card scores",
+        "  - Pareidolia: every card is a face card, a Stone included; a Midas Mask then turns a Stone Gold too, so the card scores as a card of its rank and suit",
+        "- the clock `tick` counts the loops; a gate that selects a fold of passes fires only once its inputs have settled, so no half-settled state can feed the folds a mult beyond their bounds",
         "- computed dims on non-candidate tokens hold values nobody reads",
         "",
         "## Joker keys in scope",
@@ -2200,6 +2473,8 @@ def readme(
         "",
         "Copies and the rest: "
         + ", ".join(f"`{key}`" for key in [*COPY_KEYS, BASEBALL_KEY, MIDAS_KEY]),
+        "",
+        "Rule jokers: " + ", ".join(f"`{key}`" for key in RULE_KEYS),
         "",
         "No score effect, they only occupy a slot: "
         + ", ".join(f"`{key}`" for key in INERT_KEYS),
@@ -2238,12 +2513,15 @@ def readme(
 def build() -> None:
     b = Builder()
     declare_inputs(b)
+    stage_clock(b)
     stage_card(b)
     stage_copies(b)
     stage_effective(b)
+    stage_rules(b)
     heads = position_heads(b) + [nonblack_head(b)] + held_heads(b)
     stage_midas(b)
     stage_pairs(b)
+    stage_patterns(b)
     stage_shape(b)
     stage_type(b)
     stage_score(b)

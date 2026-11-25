@@ -291,6 +291,9 @@ let private withinBounds (net: Net) (situation: Situation) (hand: Card list) (le
     let chippers = jokers |> List.filter (fun j -> net.AddsChips.Contains j.Key) |> List.length
     let polychromes = situation.Jokers |> List.filter (fun j -> j.Edition = Some Polychrome) |> List.length
     let baseballs = count "j_baseball"
+    // the rules read the raw keys, as JokerRegistry.rules does
+    let held key = situation.Jokers |> List.exists (fun j -> j.Key = key)
+    let pareidolia, smeared, midas = held "j_pareidolia", held "j_smeared", held "j_midas_mask"
     let uncommon = situation.Jokers |> List.filter (fun j -> net.Uncommon.Contains j.Key) |> List.length
 
     // fraction bits of a factor: 4 times it is a whole number
@@ -306,22 +309,32 @@ let private withinBounds (net: Net) (situation: Situation) (hand: Card list) (le
     let flag b = if b then 1 else 0
     let top5 (values: int list) = values |> List.sortDescending |> List.truncate 5 |> List.sum
 
-    // Passes and doublings without the two first-card jokers, which the bound adds once
+    let isRed suit = suit = Hearts || suit = Diamonds
+
+    // Passes and doublings without the two first-card jokers, which the bound adds once. A played Stone has no rank
+    // or suit, unless Pareidolia makes it a face card and a Midas Mask turns it Gold; Pareidolia makes every card a face
+    // card, and Smeared lets a card match the other suit of its colour
     let reach (c: Card) =
         let live = not (isStone c)
-        let face = live && (c.Rank = Jack || c.Rank = Queen || c.Rank = King)
-        let suited suit = live && (c.Enhancement = Some Enhancement.Wild || c.Suit = suit)
+        let liveScored = live || (pareidolia && midas)
+        let face = pareidolia || (live && (c.Rank = Jack || c.Rank = Queen || c.Rank = King))
+
+        let suited suit =
+            liveScored
+            && (c.Enhancement = Some Enhancement.Wild
+                || c.Suit = suit
+                || (smeared && isRed c.Suit = isRed suit))
         let red = flag (c.Seal = Some Seal.Red)
 
         { Passes =
             1 + red + count "j_sock_and_buskin" * flag face
-            + count "j_hack" * flag (live && List.contains c.Rank [ Two; Three; Four; Five ])
+            + count "j_hack" * flag (liveScored && List.contains c.Rank [ Two; Three; Four; Five ])
             + count "j_selzer"
             + (if situation.HandsLeft = 0 then count "j_dusk" else 0)
           Doubles =
             flag (c.Enhancement = Some Enhancement.Glass)
-            + count "j_triboulet" * flag (live && (c.Rank = King || c.Rank = Queen))
-            + (idols |> List.filter (fun (rank, suit) -> live && c.Rank = rank && suited suit) |> List.length)
+            + count "j_triboulet" * flag (liveScored && (c.Rank = King || c.Rank = Queen))
+            + (idols |> List.filter (fun (rank, suit) -> liveScored && c.Rank = rank && suited suit) |> List.length)
           Halves = flag (c.Edition = Some Polychrome) + (ancients |> List.filter suited |> List.length)
           Own = 4 * flag (c.Enhancement = Some Enhancement.Mult) + 10 * flag (c.Edition = Some Holo)
           HeldPasses = 1 + red + count "j_mime"
