@@ -71,3 +71,16 @@ let ``timing of the network choice`` () =
         run ()
 
     printfn "PlayNet.choose mean %.3f ms over 20 calls" (sw.Elapsed.TotalMilliseconds / 20.0)
+
+    // after a warm-up, so that the steady state is not mixed with the first calls
+    for _ in 1..20 do
+        run ()
+
+    let times =
+        Array.init 60 (fun _ ->
+            let sw = Stopwatch.StartNew()
+            run ()
+            sw.Elapsed.TotalMilliseconds)
+        |> Array.sort
+
+    printfn "PlayNet.choose steady state median %.3f ms, min %.3f ms over 60 calls" times[30] times[0]

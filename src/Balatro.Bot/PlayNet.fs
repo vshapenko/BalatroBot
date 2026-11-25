@@ -1,10 +1,13 @@
 module Balatro.Bot.PlayNet
 
 open System
+open System.Collections.Generic
 open System.Globalization
 open System.IO
+open System.Runtime.InteropServices
 open System.Text.Json
 open System.Text.RegularExpressions
+open System.Threading
 open Balatro.Core.Domain
 open Balatro.Core.Jokers
 
@@ -54,10 +57,17 @@ type Net =
           Heads: Head[]
           W1: Sparse
           B1: float[]
-          Lit: int[]
           Fresh: int[]
           Readers: int[][]
-          W2: Sparse }
+          W2: Sparse
+          W1Rows: Sparse
+          W2Rows: Sparse
+          StartOut: float[]
+          IsFresh: bool[]
+          Inputs: int[][]
+          At: int[][]
+          Affects: int[][]
+          Sink: bool[] }
 
 let private cardSlots = 8
 let private positions = 5
@@ -132,6 +142,36 @@ let load (path: string) : Net =
 
     let heads = [| for h in root.GetProperty("heads").EnumerateArray() -> head h |]
     let b1 = dense hidden (root.GetProperty "b1")
+    let w1 = sparse d true (root.GetProperty "W1")
+    let w2 = sparse hidden true (root.GetProperty "W2")
+    let w1Rows = sparse hidden false (root.GetProperty "W1")
+    let w2Rows = sparse d false (root.GetProperty "W2")
+    let dims = [ for p in root.GetProperty("dims").EnumerateObject() -> p.Name, p.Value.GetInt32() ] |> Map.ofList
+    let fresh = heads |> Array.collect (fun h -> h.Wo.Active) |> Array.distinct
+    let unitsOf (r: int) = w1.Index[w1.Start[r] .. w1.Start[r + 1] - 1]
+    let outputsOf (h: int) = w2.Index[w2.Start[h] .. w2.Start[h + 1] - 1]
+    let inputsOf (h: int) = w1Rows.Index[w1Rows.Start[h] .. w1Rows.Start[h + 1] - 1]
+    let startOut = Array.zeroCreate d
+
+    // with x = 0, only the units with a positive bias are active
+    for h in 0 .. hidden - 1 do
+        if b1[h] > 0.0 then
+            for k in w2.Start[h] .. w2.Start[h + 1] - 1 do
+                startOut[w2.Index[k]] <- startOut[w2.Index[k]] + w2.Vals[k] * b1[h]
+
+    // the dims the selection head writes on a candidate, whose query there is 0, and every dim computed from them
+    let sink = Array.zeroCreate d
+    let rec spread (r: int) =
+        if not sink[r] then
+            sink[r] <- true
+
+            for h in unitsOf r do
+                for o in outputsOf h do
+                    spread o
+
+    for h in heads do
+        if Array.contains dims["isSel"] h.Wq.Index then
+            Array.iter spread h.Wo.Active
 
     { D = d
       Loops = root.GetProperty("loops").GetInt32()
@@ -158,19 +198,32 @@ let load (path: string) : Net =
       Uncommon = [ for k in root.GetProperty("uncommon").EnumerateArray() -> k.GetString() ] |> Set.ofList
       AddsMult = [ for k in root.GetProperty("addsMult").EnumerateArray() -> k.GetString() ] |> Set.ofList
       AddsChips = [ for k in root.GetProperty("addsChips").EnumerateArray() -> k.GetString() ] |> Set.ofList
-      Dims = [ for p in root.GetProperty("dims").EnumerateObject() -> p.Name, p.Value.GetInt32() ] |> Map.ofList
+      Dims = dims
       Heads = heads
-      W1 = sparse d true (root.GetProperty "W1")
+      W1 = w1
       B1 = b1
-      Lit = [| for h in 0 .. hidden - 1 do if b1[h] > 0.0 then h |]
-      Fresh = heads |> Array.collect (fun h -> h.Wo.Active) |> Array.distinct
+      Fresh = fresh
       Readers =
         Array.init d (fun r ->
             [| for i in 0 .. heads.Length - 1 do
                    let h = heads[i]
                    if Array.contains r h.Wq.Index || Array.contains r h.Wk.Index || Array.contains r h.Wv.Index then
                        i |])
-      W2 = sparse hidden true (root.GetProperty "W2") }
+      W2 = w2
+      W1Rows = w1Rows
+      W2Rows = w2Rows
+      StartOut = startOut
+      IsFresh = Array.init d (fun r -> Array.contains r fresh)
+      Inputs = Array.init d (fun r -> w2Rows.Index[w2Rows.Start[r] .. w2Rows.Start[r + 1] - 1] |> Array.collect inputsOf |> Array.distinct)
+      At =
+        Array.init d (fun r ->
+            let inputs = w2Rows.Index[w2Rows.Start[r] .. w2Rows.Start[r + 1] - 1] |> Array.collect inputsOf |> Array.distinct
+
+            w2Rows.Index[w2Rows.Start[r] .. w2Rows.Start[r + 1] - 1]
+            |> Array.collect inputsOf
+            |> Array.map (fun i -> Array.IndexOf(inputs, i)))
+      Affects = Array.init d (fun r -> unitsOf r |> Array.collect outputsOf |> Array.distinct)
+      Sink = sink }
 
 let rec private combos k start n =
     if k = 0 then
@@ -446,97 +499,105 @@ let private inScope (net: Net) (situation: Situation) (hand: Card list) (levels:
            | None -> false)
     && withinBounds net situation hand levels
 
-// Tokens: the eight card slots (empty ones blank), 5 nulls, one per subset of the cards, the selector
-let private encode (net: Net) (situation: Situation) (hand: Card list) (levels: Map<HandType, HandLevel>) : float[][] =
+// Tokens: the eight card slots (empty ones blank), 5 nulls, one per subset of the cards, the selector, each as the
+// entries it sets on a token of zeros, in the order it sets them; the candidates share all but their first entries
+let private encode
+    (net: Net)
+    (situation: Situation)
+    (hand: Card list)
+    (levels: Map<HandType, HandLevel>)
+    : (int * float)[][] =
     let dim (name: string) = net.Dims[name]
-
-    let token () =
-        let x = Array.zeroCreate net.D
-        x[dim "one"] <- 1.0
-        x
+    let one = dim "one", 1.0
 
     let slotTokens =
         List.init cardSlots (fun i ->
-            let x = token ()
-            x[dim $"slot_{i}"] <- 1.0
+            [| one
+               dim $"slot_{i}", 1.0
 
-            match List.tryItem i hand with
-            | Some card ->
-                x[dim "isCard"] <- 1.0
-                x[dim $"rank_{Rank.id card.Rank}"] <- 1.0
-                x[dim $"suit_{suitName card.Suit}"] <- 1.0
-                x[dim "nominal"] <- float (Rank.nominal card.Rank)
-                card.Enhancement |> Option.iter (fun e -> x[dim $"enh_{e}"] <- 1.0)
-                card.Edition |> Option.iter (fun e -> x[dim $"ed_{e}"] <- 1.0)
-                card.Seal |> Option.iter (fun e -> x[dim $"seal_{e}"] <- 1.0)
-            | None -> ()
+               match List.tryItem i hand with
+               | Some card ->
+                   dim "isCard", 1.0
+                   dim $"rank_{Rank.id card.Rank}", 1.0
+                   dim $"suit_{suitName card.Suit}", 1.0
+                   dim "nominal", float (Rank.nominal card.Rank)
 
-            x)
+                   for e in Option.toList card.Enhancement do
+                       dim $"enh_{e}", 1.0
+
+                   for e in Option.toList card.Edition do
+                       dim $"ed_{e}", 1.0
+
+                   for e in Option.toList card.Seal do
+                       dim $"seal_{e}", 1.0
+               | None -> () |])
 
     let nulls =
-        List.init 5 (fun k ->
-            let x = token ()
-            x[dim "isNull"] <- 1.0
-            x[dim $"slot_{cardSlots + k}"] <- 1.0
-            x)
+        List.init 5 (fun k -> [| one; dim "isNull", 1.0; dim $"slot_{cardSlots + k}", 1.0 |])
+
+    let shared =
+        [| for t, name in handTypes do
+               dim $"C_{name}", levels[t].Chips
+               dim $"M_{name}", levels[t].Mult
+
+               let run, round = Map.tryFind t situation.HandPlays |> Option.defaultValue (0, 0)
+               dim $"run_{name}", float run
+               dim $"rnd_{name}", float round
+
+           dim "hl", float situation.HandsLeft
+           dim "dl", float situation.DiscardsLeft
+
+           for i, joker in List.indexed situation.Jokers do
+               let slot = i + 1
+               dim $"j{slot}_k_{net.Keys[joker.Key]}", 1.0
+
+               for e in Option.toList joker.Edition do
+                   dim $"j{slot}_e_{e}", 1.0
+
+               // a joker that multiplies by an input factor never reads its value (Ramen's comes from its text)
+               if (factorOf net joker).IsNone then
+                   dim $"j{slot}_v", valueOf joker
+
+               for factor in Option.toList (factorOf net joker) do
+                   dim (if joker.Key = "j_obelisk" then $"j{slot}_fo" else $"j{slot}_fx"), factor - 1.0
+
+               if joker.Key = "j_loyalty_card" && loyaltyActive joker then
+                   dim $"j{slot}_loy", 1.0
+
+               match joker.Key with
+               | "j_ancient" ->
+                   for suit in Option.toList (ancientSuit joker) do
+                       dim $"j{slot}_ts_{suitName suit}", 1.0
+               | "j_idol" ->
+                   for rank, suit in Option.toList (idolTarget joker) do
+                       dim $"j{slot}_ts_{suitName suit}", 1.0
+                       dim $"j{slot}_tid", float (Rank.id rank)
+               | _ -> () |]
+
+    let isCand, idx = dim "isCand", dim "idx"
+    let picks = Array2D.create positions (cardSlots + positions) -1
+
+    let pick k slot =
+        if picks[k, slot] < 0 then
+            picks[k, slot] <- dim $"m{k + 1}_{slot}"
+
+        picks[k, slot]
 
     let candidates =
         subsetsOf hand.Length
         |> Array.mapi (fun position subset ->
-            let x = token ()
-            x[dim "isCand"] <- 1.0
-            x[dim "idx"] <- float position
+            Array.append
+                [| one
+                   isCand, 1.0
+                   idx, float position
 
-            for k in 0 .. positions - 1 do
-                let slot = if k < subset.Length then subset[k] else cardSlots + k - subset.Length
-                x[dim $"m{k + 1}_{slot}"] <- 1.0
-
-            for t, name in handTypes do
-                x[dim $"C_{name}"] <- levels[t].Chips
-                x[dim $"M_{name}"] <- levels[t].Mult
-
-                let run, round = Map.tryFind t situation.HandPlays |> Option.defaultValue (0, 0)
-                x[dim $"run_{name}"] <- float run
-                x[dim $"rnd_{name}"] <- float round
-
-            x[dim "hl"] <- float situation.HandsLeft
-            x[dim "dl"] <- float situation.DiscardsLeft
-
-            situation.Jokers
-            |> List.iteri (fun i joker ->
-                let slot = i + 1
-                x[dim $"j{slot}_k_{net.Keys[joker.Key]}"] <- 1.0
-                joker.Edition |> Option.iter (fun e -> x[dim $"j{slot}_e_{e}"] <- 1.0)
-                // a joker that multiplies by an input factor never reads its value (Ramen's comes from its text)
-                if (factorOf net joker).IsNone then
-                    x[dim $"j{slot}_v"] <- valueOf joker
-
-                factorOf net joker
-                |> Option.iter (fun factor ->
-                    x[dim (if joker.Key = "j_obelisk" then $"j{slot}_fo" else $"j{slot}_fx")] <- factor - 1.0)
-
-                if joker.Key = "j_loyalty_card" && loyaltyActive joker then
-                    x[dim $"j{slot}_loy"] <- 1.0
-
-                match joker.Key with
-                | "j_ancient" ->
-                    ancientSuit joker |> Option.iter (fun suit -> x[dim $"j{slot}_ts_{suitName suit}"] <- 1.0)
-                | "j_idol" ->
-                    idolTarget joker
-                    |> Option.iter (fun (rank, suit) ->
-                        x[dim $"j{slot}_ts_{suitName suit}"] <- 1.0
-                        x[dim $"j{slot}_tid"] <- float (Rank.id rank))
-                | _ -> ())
-
-            x)
+                   for k in 0 .. positions - 1 do
+                       let slot = if k < subset.Length then subset[k] else cardSlots + k - subset.Length
+                       pick k slot, 1.0 |]
+                shared)
         |> List.ofArray
 
-    let selector =
-        let x = token ()
-        x[dim "isSel"] <- 1.0
-        x
-
-    slotTokens @ nulls @ candidates @ [ selector ] |> Array.ofList
+    slotTokens @ nulls @ candidates @ [ [| one; dim "isSel", 1.0 |] ] |> Array.ofList
 
 // out[offset + r] = row r of m times x
 let private mul (m: Sparse) (x: float[]) (out: float[]) (offset: int) =
@@ -550,20 +611,341 @@ let private mul (m: Sparse) (x: float[]) (out: float[]) (offset: int) =
 
 let private rows (m: Sparse) = m.Start.Length - 1
 
-// Softmax attention over all tokens, added to delta. A token whose key is all zero scores 0 with every
-// query, so those tokens share one weight and their values enter through one sum
-let private attend (head: Head) (xs: float[][]) (delta: float[][]) =
+// A partition of the candidate tokens: candidate t is in class Cls[t], the classes numbered in the order they first
+// occur, Rep[c] the first candidate in class c
+[<AllowNullLiteral>]
+type private Part(cls: byte[], count: int, rep: int[], id: int) =
+    member _.Cls = cls
+    member _.Count = count
+    member _.Rep = rep
+    member _.Id = id
+    // a partition this one was merged from, so finer than it
+    member val Finer: Part = null with get, set
+
+// One dim on every candidate: candidate t holds Values[Part.Cls[t]], and no two classes hold the same value
+type private Column = { Part: Part; Values: float[] }
+
+let private value (c: Column) (t: int) = c.Values[int c.Part.Cls[t]]
+
+let private same (a: Column) (b: Column) =
+    obj.ReferenceEquals(a.Part, b.Part)
+    && MemoryExtensions.SequenceEqual(
+        MemoryMarshal.Cast<float, int64>(ReadOnlySpan<float>(a.Values)),
+        MemoryMarshal.Cast<float, int64>(ReadOnlySpan<float>(b.Values))
+    )
+
+// The partitions of one call, each kept once, so that equal partitions are the same object
+type private Parts(count: int, pairs: int[], buffers: float[][]) =
+    let known = Dictionary<int, ResizeArray<Part>>()
+    let meets = Dictionary<struct (int * int), Part>()
+    let merges = Dictionary<struct (int * int64), Part>()
+    let classOf = Dictionary<int64, int>()
+    let distinct = ResizeArray<Part>()
+    let keys = Array.zeroCreate count
+    let firsts = Array.zeroCreate count
+    let mutable parts = 0
+
+    // the partition with these classes, firsts[c] the first candidate of class c
+    let intern (cls: byte[]) (classes: int) =
+        let mutable hash = classes
+
+        for c in cls do
+            hash <- hash * 31 + int c
+
+        let bucket =
+            match known.TryGetValue hash with
+            | true, bucket -> bucket
+            | _ ->
+                let bucket = ResizeArray()
+                known[hash] <- bucket
+                bucket
+
+        match bucket.Find(fun p -> MemoryExtensions.SequenceEqual(ReadOnlySpan<byte>(p.Cls), ReadOnlySpan<byte>(cls))) with
+        | null ->
+            let p = Part(cls, classes, Array.sub firsts 0 classes, parts)
+            parts <- parts + 1
+            bucket.Add p
+            p
+        | p -> p
+
+    let one = intern (Array.zeroCreate count) 1
+
+    let each =
+        for t in 0 .. count - 1 do
+            firsts[t] <- t
+
+        intern (Array.init count byte) count
+
+    member _.One = one
+
+    member _.Each = each
+
+    // A reused array of at least size elements, one per slot
+    member _.Buffer(slot: int, size: int) =
+        if buffers[slot].Length < size then
+            buffers[slot] <- Array.zeroCreate (max size (2 * buffers[slot].Length))
+
+        buffers[slot]
+
+    // The coarsest partition finer than both
+    member _.Meet(p: Part, q: Part) =
+        if p.Count = 1 || obj.ReferenceEquals(q, p.Finer) then
+            q
+        elif q.Count = 1 || obj.ReferenceEquals(p, q) || obj.ReferenceEquals(p, q.Finer) then
+            p
+        else
+            let key = if p.Id < q.Id then struct (p.Id, q.Id) else struct (q.Id, p.Id)
+
+            match meets.TryGetValue key with
+            | true, m -> m
+            | _ ->
+                let cls = Array.zeroCreate count
+                let mutable classes = 0
+
+                for t in 0 .. count - 1 do
+                    let k = int p.Cls[t] * q.Count + int q.Cls[t]
+                    keys[t] <- k
+
+                    if pairs[k] < 0 then
+                        pairs[k] <- classes
+                        firsts[classes] <- t
+                        classes <- classes + 1
+
+                    cls[t] <- byte pairs[k]
+
+                for t in 0 .. count - 1 do
+                    pairs[keys[t]] <- -1
+
+                let m = intern cls classes
+                meets[key] <- m
+                m
+
+    // The meet of the partitions of the given columns, taken in the order of their ids so that the same set of
+    // partitions meets through the same steps
+    member this.MeetAll(dims: int[], cols: Column[]) =
+        distinct.Clear()
+
+        for i in dims do
+            let q = cols[i].Part
+
+            if q.Count > 1 && not (distinct.Contains q) then
+                distinct.Add q
+
+        if distinct.Count = 0 then
+            one
+        else
+            distinct.Sort(fun a b -> compare a.Id b.Id)
+            let mutable m = distinct[0]
+
+            for a in 1 .. distinct.Count - 1 do
+                m <- this.Meet(m, distinct[a])
+
+            m
+
+    // The column holding values[c] on class c of part, with the classes of equal value merged
+    member _.Column(part: Part, values: float[]) =
+        if part.Count = 1 then
+            { Part = one; Values = values }
+        else
+            let classes = part.Count
+            let merged = Array.zeroCreate classes
+            let map = Array.zeroCreate classes
+            let mutable m = 0
+            let mutable pattern = 0L
+            classOf.Clear()
+
+            for c in 0 .. classes - 1 do
+                let bits = BitConverter.DoubleToInt64Bits values[c]
+                let mutable j = 0
+
+                if classes <= 16 then
+                    while j < m && BitConverter.DoubleToInt64Bits merged[j] <> bits do
+                        j <- j + 1
+                else
+                    match classOf.TryGetValue bits with
+                    | true, found -> j <- found
+                    | _ ->
+                        j <- m
+                        classOf[bits] <- m
+
+                if j = m then
+                    merged[m] <- values[c]
+                    firsts[m] <- part.Rep[c]
+                    m <- m + 1
+
+                map[c] <- j
+                pattern <- pattern * 1000003L + int64 j
+
+            if m = classes then
+                { Part = part; Values = values }
+            elif m = 1 then
+                { Part = one; Values = [| values[0] |] }
+            else
+                let key = struct (part.Id, pattern)
+
+                let merge =
+                    let mutable found = null
+
+                    match merges.TryGetValue key with
+                    | true, p ->
+                        let mutable c = 0
+
+                        while c < classes && map[c] = int p.Cls[part.Rep[c]] do
+                            c <- c + 1
+
+                        if c = classes then
+                            found <- p
+                    | _ -> ()
+
+                    if isNull found then
+                        found <- intern (Array.init count (fun t -> byte map[int part.Cls[t]])) m
+
+                        if isNull found.Finer then
+                            found.Finer <- part
+
+                        merges[key] <- found
+
+                    found
+
+                { Part = merge; Values = Array.sub merged 0 m }
+
+// x + a on every candidate where a is not 0, as a token adds each change
+let private plus (parts: Parts) (x: Column) (a: Column) =
+    if a.Part.Count = 1 && a.Values[0] = 0.0 then
+        x
+    else
+        let p = parts.Meet(x.Part, a.Part)
+
+        parts.Column(
+            p,
+            Array.init p.Count (fun c ->
+                let t = p.Rep[c]
+                let change = value a t
+                if change <> 0.0 then value x t + change else value x t)
+        )
+
+// out[offset + r] = row r of m times the x of candidate t
+let private mulColumns (m: Sparse) (cols: Column[]) (t: int) (out: float[]) (offset: int) =
+    for r in m.Active do
+        let mutable sum = 0.0
+
+        for k in m.Start[r] .. m.Start[r + 1] - 1 do
+            sum <- sum + m.Vals[k] * value cols[m.Index[k]] t
+
+        out[offset + r] <- sum
+
+// What the MLP adds to dim r, W2 ReLU(W1 z + b1), computed once per class of candidates that agree on every input of
+// the units that write r. Every value on a candidate is exact (see the precision bounds in nn/README.md), so this is
+// the sum the token passes reach change by change
+let private mlp (net: Net) (parts: Parts) (z: Column[]) (r: int) =
+    let w1, w2 = net.W1Rows, net.W2Rows
+    let inputs = net.Inputs[r]
+    let part = parts.MeetAll(inputs, z)
+    let classes = part.Count
+
+    if classes = 1 then
+        let mutable out = 0.0
+
+        for k in w2.Start[r] .. w2.Start[r + 1] - 1 do
+            let h = w2.Index[k]
+            let mutable pre = net.B1[h]
+
+            for k1 in w1.Start[h] .. w1.Start[h + 1] - 1 do
+                pre <- pre + w1.Vals[k1] * z[w1.Index[k1]].Values[0]
+
+            if pre > 0.0 then
+                out <- out + w2.Vals[k] * pre
+
+        { Part = part; Values = [| out |] }
+    else
+        let fetched = parts.Buffer(0, inputs.Length * classes)
+        let pre = parts.Buffer(1, classes)
+        let out = Array.zeroCreate classes
+        let rep = part.Rep
+
+        for a in 0 .. inputs.Length - 1 do
+            let col = z[inputs[a]]
+            let offset = a * classes
+
+            if col.Part.Count = 1 then
+                Array.fill fetched offset classes col.Values[0]
+            else
+                let cls, values = col.Part.Cls, col.Values
+
+                for c in 0 .. classes - 1 do
+                    fetched[offset + c] <- values[int cls[rep[c]]]
+
+        let at = net.At[r]
+        let mutable p = 0
+
+        for k in w2.Start[r] .. w2.Start[r + 1] - 1 do
+            let h = w2.Index[k]
+            Array.fill pre 0 classes net.B1[h]
+
+            for k1 in w1.Start[h] .. w1.Start[h + 1] - 1 do
+                let w = w1.Vals[k1]
+                let offset = at[p] * classes
+                p <- p + 1
+
+                for c in 0 .. classes - 1 do
+                    pre[c] <- pre[c] + w * fetched[offset + c]
+
+            let w = w2.Vals[k]
+
+            for c in 0 .. classes - 1 do
+                if pre[c] > 0.0 then
+                    out[c] <- out[c] + w * pre[c]
+
+        parts.Column(part, out)
+
+// The candidates: X after the last loop, Z = X + attention (what the MLP reads), M what the MLP adds, A the attention
+// output, and the dims each of them changed in
+type private Candidates =
+    { X: Column[]
+      Z: Column[]
+      M: Column[]
+      A: Column[]
+      Moved: ResizeArray<int>
+      Attended: ResizeArray<int>
+      Read: ResizeArray<int>
+      Added: ResizeArray<int>
+      mutable Seed: int[]
+      Seen: int[]
+      mutable Id: int }
+
+// Softmax attention over all tokens. A token whose key is all zero scores 0 with every query, so those tokens share
+// one weight and their values enter through one sum. The card slots, nulls and selector read their x and get their
+// output in delta; the candidates read their columns and get theirs once per class of equal query, in A or, for the
+// sink, in sinkDelta
+let private attend
+    (net: Net)
+    (parts: Parts)
+    (head: Head)
+    (xs: float[][])
+    (first: int)
+    (cands: Candidates)
+    (delta: float[][])
+    (sinkDelta: float[])
+    =
     let n = xs.Length
+    let isRow i = i < first || i = n - 1
     let dq = rows head.Wq
     let dv = rows head.Wv
-    let q = Array.zeroCreate (n * dq)
-    let k = Array.zeroCreate (n * dq)
-    let v = Array.zeroCreate (n * dv)
+    let q = parts.Buffer(2, n * dq)
+    let k = parts.Buffer(3, n * dq)
+    let v = parts.Buffer(4, n * dv)
+    Array.Clear(q, 0, n * dq)
+    Array.Clear(k, 0, n * dq)
+    Array.Clear(v, 0, n * dv)
 
     for i in 0 .. n - 1 do
-        mul head.Wq xs[i] q (i * dq)
-        mul head.Wk xs[i] k (i * dq)
-        mul head.Wv xs[i] v (i * dv)
+        if isRow i then
+            mul head.Wq xs[i] q (i * dq)
+            mul head.Wk xs[i] k (i * dq)
+            mul head.Wv xs[i] v (i * dv)
+        else
+            mulColumns head.Wk cands.X (i - first) k (i * dq)
+            mulColumns head.Wv cands.X (i - first) v (i * dv)
 
     let isKeyed = Array.zeroCreate n
 
@@ -587,7 +969,7 @@ let private attend (head: Head) (xs: float[][]) (delta: float[][]) =
     let unkeyed = float (n - keyed.Length)
     let weights = Array.zeroCreate keyed.Length
     let mixed = Array.zeroCreate dv
-    let projected = Array.zeroCreate delta[0].Length
+    let projected = parts.Buffer(5, net.D)
 
     // a query of zero scores every token 0, so every token weighs 1 / n
     let meanV = Array.zeroCreate dv
@@ -596,11 +978,11 @@ let private attend (head: Head) (xs: float[][]) (delta: float[][]) =
         for c in 0 .. dv - 1 do
             meanV[c] <- meanV[c] + v[j * dv + c] / float n
 
-    for i in 0 .. n - 1 do
+    let mix (qs: float[]) (offset: int) =
         let mutable zeroQuery = true
 
         for c in 0 .. dq - 1 do
-            if q[i * dq + c] <> 0.0 then
+            if qs[offset + c] <> 0.0 then
                 zeroQuery <- false
 
         if zeroQuery then
@@ -612,7 +994,7 @@ let private attend (head: Head) (xs: float[][]) (delta: float[][]) =
                 let mutable s = 0.0
 
                 for c in 0 .. dq - 1 do
-                    s <- s + q[i * dq + c] * k[keyed[a] * dq + c]
+                    s <- s + qs[offset + c] * k[keyed[a] * dq + c]
 
                 weights[a] <- s
                 top <- Math.Max(top, s)
@@ -635,14 +1017,40 @@ let private attend (head: Head) (xs: float[][]) (delta: float[][]) =
 
         mul head.Wo mixed projected 0
 
-        for r in head.Wo.Active do
-            delta[i][r] <- projected[r]
+    for i in 0 .. n - 1 do
+        if isRow i then
+            mix q (i * dq)
+
+            for r in head.Wo.Active do
+                delta[i][r] <- projected[r]
+
+    let part = parts.MeetAll(head.Wq.Index, cands.X)
+    let outs = head.Wo.Active |> Array.map (fun _ -> Array.zeroCreate part.Count)
+    let query = Array.zeroCreate dq
+
+    for c in 0 .. part.Count - 1 do
+        mulColumns head.Wq cands.X part.Rep[c] query 0
+        mix query 0
+
+        for a in 0 .. outs.Length - 1 do
+            outs[a][c] <- projected[head.Wo.Active[a]]
+
+    for a in 0 .. outs.Length - 1 do
+        let r = head.Wo.Active[a]
+
+        if net.Sink[r] then
+            sinkDelta[r] <- outs[a][0]
+        else
+            let col = parts.Column(part, outs[a])
+
+            if not (same col cands.A[r]) then
+                cands.A[r] <- col
+                cands.Attended.Add r
 
 // One token and what is known of its MLP: Pre = W1 x + b1 for the x last folded in, Out = W2 ReLU(Pre) (what the MLP
 // adds to x every loop), and Pend, the change of x not yet folded into Pre. Only changes are propagated, so a dim that
-// has settled costs nothing. On the candidate tokens the result is bit-identical to recomputing W2 ReLU(W1 x + b1) from
-// scratch every loop; on the selector, whose attention averages with weights 1/n until the key settles, the dims can keep
-// rounding residue (below 1e-8 observed) that the readout rounds away
+// has settled costs nothing. The selector, whose attention averages with weights 1/n until the key settles, can keep
+// rounding residue in its dims (below 1e-8 observed) that the readout rounds away
 type private Token =
     { X: float[]
       Pre: float[]
@@ -717,47 +1125,187 @@ let private propagate (net: Net) (w: Scratch) (t: Token) =
                 out[r] <- out[r] + vals2[k] * change
                 noteOut t r
 
-// x += attention; x += W2 ReLU(W1 x + b1)
-let private block (net: Net) (xs: float[][]) (tokens: Token[]) (delta: float[][]) (w: Scratch) =
-    // a head's output changes only when something it reads has changed; each head owns its fresh dims in delta
-    for h in 0 .. net.Heads.Length - 1 do
-        if w.Dirty[h] then
-            w.Dirty[h] <- false
-            attend net.Heads[h] xs delta
+// One loop on one token: x += attention; x += W2 ReLU(W1 x + b1)
+let private advance (net: Net) (w: Scratch) (t: Token) (delta: float[]) =
+    for r in net.Fresh do
+        let change = delta[r]
 
-    for i in 0 .. tokens.Length - 1 do
-        let t = tokens[i]
+        if change <> 0.0 then
+            t.X[r] <- t.X[r] + change
+            push t r change
 
-        for r in net.Fresh do
-            let change = delta[i][r]
+            for h in net.Readers[r] do
+                w.Dirty[h] <- true
 
-            if change <> 0.0 then
-                t.X[r] <- t.X[r] + change
-                push t r change
+    propagate net w t
+    let mutable kept = 0
+
+    for a in 0 .. t.OutCount - 1 do
+        let r = t.OutDims[a]
+        let out = t.Out[r]
+
+        if out <> 0.0 then
+            t.X[r] <- t.X[r] + out
+            push t r out
+
+            for h in net.Readers[r] do
+                w.Dirty[h] <- true
+
+            t.OutDims[kept] <- r
+            kept <- kept + 1
+        else
+            t.OutSeen[r] <- false
+
+    t.OutCount <- kept
+
+// One loop on the candidates, as advance does it on each: z = x + attention, m = W2 ReLU(W1 z + b1), x = z + m, each
+// recomputed only where an operand changed
+let private step (net: Net) (parts: Parts) (c: Candidates) (dirty: bool[]) =
+    let first (r: int) =
+        if c.Seen[r] = c.Id then
+            false
+        else
+            c.Seen[r] <- c.Id
+            true
+
+    let read (r: int) =
+        if first r then
+            let z = if net.IsFresh[r] then plus parts c.X[r] c.A[r] else c.X[r]
+
+            if not (same z c.Z[r]) then
+                c.Z[r] <- z
+                c.Read.Add r
+
+    let add (r: int) =
+        if first r then
+            let m = mlp net parts c.Z r
+
+            if not (same m c.M[r]) then
+                c.M[r] <- m
+                c.Added.Add r
+
+    let move (r: int) =
+        if first r then
+            let x = plus parts c.Z[r] c.M[r]
+
+            if not (same x c.X[r]) then
+                c.X[r] <- x
+                c.Moved.Add r
 
                 for h in net.Readers[r] do
-                    w.Dirty[h] <- true
+                    dirty[h] <- true
 
-        propagate net w t
-        let mutable kept = 0
+    c.Id <- c.Id + 1
+    c.Read.Clear()
+    c.Moved.ForEach read
+    c.Attended.ForEach read
+    c.Attended.Clear()
+    c.Id <- c.Id + 1
+    c.Added.Clear()
+    Array.iter add c.Seed
+    c.Seed <- [||]
 
-        for a in 0 .. t.OutCount - 1 do
-            let r = t.OutDims[a]
-            let out = t.Out[r]
+    for z in c.Read do
+        Array.iter add net.Affects[z]
 
-            if out <> 0.0 then
-                t.X[r] <- t.X[r] + out
-                push t r out
+    c.Id <- c.Id + 1
+    c.Moved.Clear()
+    c.Read.ForEach move
+    c.Added.ForEach move
 
-                for h in net.Readers[r] do
-                    w.Dirty[h] <- true
 
-                t.OutDims[kept] <- r
-                kept <- kept + 1
-            else
-                t.OutSeen[r] <- false
+// What one thread reuses from call to call, sized by the net alone: the state of the card slot, null and selector
+// tokens and of the sink token, their attention outputs, and the candidates' dims
+type private Workspace =
+    { Net: Net
+      Tokens: Token[]
+      Delta: float[][]
+      Blank: float[]
+      Scratch: Scratch
+      Cands: Candidates
+      Pairs: int[]
+      Buffers: float[][] }
 
-        t.OutCount <- kept
+let private workspaces = new ThreadLocal<Workspace>()
+
+let private workspace (net: Net) =
+    let w = workspaces.Value
+
+    if not (isNull (box w)) && obj.ReferenceEquals(w.Net, net) then
+        w
+    else
+        let hidden = net.B1.Length
+        let rowTokens = cardSlots + positions + 1
+        let candidates = (subsetsOf cardSlots).Length
+
+        let blank () =
+            { X = Array.zeroCreate net.D
+              Pre = Array.zeroCreate hidden
+              Out = Array.zeroCreate net.D
+              OutDims = Array.zeroCreate net.D
+              OutSeen = Array.zeroCreate net.D
+              OutCount = 0
+              Pend = Array.zeroCreate net.D
+              PendDims = Array.zeroCreate net.D
+              PendSeen = Array.zeroCreate net.D
+              PendCount = 0 }
+
+        let w =
+            { Net = net
+              Tokens = Array.init (rowTokens + 1) (fun _ -> blank ())
+              Delta = Array.init (rowTokens + 1) (fun _ -> Array.zeroCreate net.D)
+              Blank = Array.zeroCreate net.D
+              Scratch =
+                { Dirty = Array.zeroCreate net.Heads.Length
+                  Old = Array.zeroCreate hidden
+                  Stamp = Array.zeroCreate hidden
+                  Touched = Array.zeroCreate hidden
+                  Id = 0 }
+              Cands =
+                { X = Array.zeroCreate net.D
+                  Z = Array.zeroCreate net.D
+                  M = Array.zeroCreate net.D
+                  A = Array.zeroCreate net.D
+                  Moved = ResizeArray()
+                  Attended = ResizeArray()
+                  Read = ResizeArray()
+                  Added = ResizeArray()
+                  Seed = [||]
+                  Seen = Array.zeroCreate net.D
+                  Id = 0 }
+              Pairs = Array.create (candidates * candidates) -1
+              Buffers = Array.init 6 (fun _ -> Array.zeroCreate 64) }
+
+        workspaces.Value <- w
+        w
+
+// Start a token from its entries, x = 0 elsewhere, Pre = b1 and Out = start
+let private reset (net: Net) (t: Token) (entries: (int * float)[]) (start: float[]) =
+    Array.Clear t.X
+
+    for r, v in entries do
+        t.X[r] <- v
+
+    Array.blit net.B1 0 t.Pre 0 net.B1.Length
+    Array.blit start 0 t.Out 0 net.D
+
+    for a in 0 .. t.OutCount - 1 do
+        t.OutSeen[t.OutDims[a]] <- false
+
+    t.OutCount <- 0
+
+    for a in 0 .. t.PendCount - 1 do
+        t.Pend[t.PendDims[a]] <- 0.0
+        t.PendSeen[t.PendDims[a]] <- false
+
+    t.PendCount <- 0
+
+    for r in 0 .. net.D - 1 do
+        if start[r] <> 0.0 then
+            noteOut t r
+
+        if t.X[r] <> 0.0 then
+            push t r t.X[r]
 
 let choose
     (net: Net)
@@ -768,52 +1316,85 @@ let choose
     if not (inScope net situation hand levels) then
         None
     else
-        let xs = encode net situation hand levels
-        let delta = Array.init xs.Length (fun _ -> Array.zeroCreate net.D)
-        let hidden = net.B1.Length
+        let entries = encode net situation hand levels
+        let w = workspace net
+        let n = entries.Length
+        let first = cardSlots + positions
+        let count = n - 1 - first
+        let isRow i = i < first || i = n - 1
+        // the workspace token of a row: the card slots and nulls in order, then the selector, then the sink
+        let rowOf i = if i < first then i else first
+        let sink = w.Tokens[first + 1]
+        let sinkDelta = w.Delta[first + 1]
 
-        let scratch =
-            { Dirty = Array.create net.Heads.Length true
-              Old = Array.zeroCreate hidden
-              Stamp = Array.zeroCreate hidden
-              Touched = Array.zeroCreate hidden
-              Id = 0 }
+        for i in 0 .. n - 1 do
+            if isRow i then
+                reset net w.Tokens[rowOf i] entries[i] net.StartOut
 
-        // with x = 0, only the units with a positive bias are active
-        let startOut = Array.zeroCreate net.D
+        // the sink is computed on one token for all candidates: no other dim reads it, it reads nothing else, and its
+        // input, the attention of a zero query, is the same on every candidate
+        reset net sink [||] w.Blank
 
-        for h in net.Lit do
-            for k in net.W2.Start[h] .. net.W2.Start[h + 1] - 1 do
-                startOut[net.W2.Index[k]] <- startOut[net.W2.Index[k]] + net.W2.Vals[k] * net.B1[h]
+        let xs = Array.init n (fun i -> if isRow i then w.Tokens[rowOf i].X else null)
+        let delta = Array.init n (fun i -> if isRow i then w.Delta[rowOf i] else null)
 
         let tokens =
-            xs
-            |> Array.map (fun x ->
-                let t =
-                    { X = x
-                      Pre = Array.copy net.B1
-                      Out = Array.copy startOut
-                      OutDims = Array.zeroCreate net.D
-                      OutSeen = Array.zeroCreate net.D
-                      OutCount = 0
-                      Pend = Array.zeroCreate net.D
-                      PendDims = Array.zeroCreate net.D
-                      PendSeen = Array.zeroCreate net.D
-                      PendCount = 0 }
+            [| for i in 0 .. n - 1 do
+                   if isRow i then
+                       w.Tokens[rowOf i], delta[i]
+               sink, sinkDelta |]
 
-                for r in 0 .. net.D - 1 do
-                    if startOut[r] <> 0.0 then
-                        noteOut t r
+        let scratch = w.Scratch
+        Array.fill scratch.Dirty 0 scratch.Dirty.Length true
+        Array.Clear scratch.Stamp
+        scratch.Id <- 0
 
-                    if x[r] <> 0.0 then
-                        push t r x[r]
+        let parts = Parts(count, w.Pairs, w.Buffers)
+        let zero = { Part = parts.One; Values = [| 0.0 |] }
+        let cands = w.Cands
 
-                t)
+        for cols in [ cands.X; cands.Z; cands.M; cands.A ] do
+            Array.fill cols 0 net.D zero
+
+        cands.Moved.Clear()
+        cands.Attended.Clear()
+        cands.Seed <- [| for r in 0 .. net.D - 1 do if net.StartOut[r] <> 0.0 && not net.Sink[r] then r |]
+        Array.Clear cands.Seen
+        cands.Id <- 0
+        let inputs = Dictionary<int, float[]>()
+
+        for t in 0 .. count - 1 do
+            for r, v in entries[first + t] do
+                match inputs.TryGetValue r with
+                | true, values -> values[t] <- v
+                | _ ->
+                    let values = Array.zeroCreate count
+                    values[t] <- v
+                    inputs[r] <- values
+
+        for KeyValue(r, values) in inputs do
+            let x =
+                if Array.forall (fun v -> BitConverter.DoubleToInt64Bits v = BitConverter.DoubleToInt64Bits values[0]) values then
+                    { Part = parts.One; Values = [| values[0] |] }
+                else
+                    parts.Column(parts.Each, values)
+
+            if not (same x zero) then
+                cands.X[r] <- x
+                cands.Moved.Add r
 
         for _ in 1 .. net.Loops do
-            block net xs tokens delta scratch
+            for h in 0 .. net.Heads.Length - 1 do
+                if scratch.Dirty[h] then
+                    scratch.Dirty[h] <- false
+                    attend net parts net.Heads[h] xs first cands delta sinkDelta
 
-        let selector = xs[xs.Length - 1]
+            for t, d in tokens do
+                advance net scratch t d
+
+            step net parts cands scratch.Dirty
+
+        let selector = xs[n - 1]
         let dim (name: string) = selector[net.Dims[name]]
 
         let played = [ for i in 0 .. cardSlots - 1 do if dim $"sel_slot_{i}" > 0.5 then i ]
