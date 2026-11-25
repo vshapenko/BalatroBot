@@ -1,6 +1,7 @@
 module Balatro.Bot.PlayNet
 
 open System
+open System.Globalization
 open System.IO
 open System.Text.Json
 open System.Text.RegularExpressions
@@ -33,6 +34,7 @@ type private Limits =
       HeldHalves: int
       HeldPasses: int
       Jokers: int
+      Factor: float
       Value: float
       Left: int
       Plays: int }
@@ -44,6 +46,8 @@ type Net =
           Limits: Limits
           Keys: Map<string, string>
           Main: Set<string>
+          Factors: Set<string>
+          Uncommon: Set<string>
           AddsMult: Set<string>
           AddsChips: Set<string>
           Dims: Map<string, int>
@@ -144,11 +148,14 @@ let load (path: string) : Net =
           HeldHalves = limits.GetProperty("heldHalves").GetInt32()
           HeldPasses = limits.GetProperty("heldPasses").GetInt32()
           Jokers = limits.GetProperty("jokers").GetInt32()
+          Factor = limits.GetProperty("factor").GetDouble()
           Value = limits.GetProperty("value").GetDouble()
           Left = limits.GetProperty("left").GetInt32()
           Plays = limits.GetProperty("plays").GetInt32() }
       Keys = [ for p in root.GetProperty("keys").EnumerateObject() -> p.Name, p.Value.GetString() ] |> Map.ofList
       Main = [ for k in root.GetProperty("main").EnumerateArray() -> k.GetString() ] |> Set.ofList
+      Factors = [ for k in root.GetProperty("factors").EnumerateArray() -> k.GetString() ] |> Set.ofList
+      Uncommon = [ for k in root.GetProperty("uncommon").EnumerateArray() -> k.GetString() ] |> Set.ofList
       AddsMult = [ for k in root.GetProperty("addsMult").EnumerateArray() -> k.GetString() ] |> Set.ofList
       AddsChips = [ for k in root.GetProperty("addsChips").EnumerateArray() -> k.GetString() ] |> Set.ofList
       Dims = [ for p in root.GetProperty("dims").EnumerateObject() -> p.Name, p.Value.GetInt32() ] |> Map.ofList
@@ -207,6 +214,57 @@ let private idolTarget (joker: Joker) =
     else
         None
 
+// The number a joker text starts with after a prefix, 0 when it is not readable (JokersCounter.leading)
+let private leading (prefix: string) (joker: Joker) =
+    let m = Regex.Match(joker.Text, "^" + Regex.Escape prefix + @"(\d+(?:\.\d+)?)")
+
+    if m.Success then
+        Double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture)
+    else
+        0.0
+
+// The number a joker adds: its value, or for Ice Cream and Popcorn the number in their text
+let private valueOf (joker: Joker) =
+    match joker.Key with
+    | "j_ice_cream"
+    | "j_popcorn" -> leading "+" joker
+    | _ -> Option.defaultValue 0.0 joker.Value
+
+// The factor a joker multiplies mult by, from its value or text as the reference derives it (1 for no effect);
+// None for a joker that does not multiply by an input
+let private factorOf (net: Net) (joker: Joker) : float option =
+    let times factor = if factor > 1.0 then factor else 1.0
+
+    match joker.Key with
+    | "j_obelisk" -> Some(times (Option.defaultValue 0.0 joker.Value + 0.2))
+    | "j_ramen" ->
+        // the game subtracts 0.01 once per discarded card from 2, so the text value is rebuilt the same way
+        let discarded = int (Math.Round((2.0 - leading "X" joker) / 0.01))
+        Some(times (Seq.fold (fun factor _ -> factor - 0.01) 2.0 (seq { 1..discarded })))
+    | key when net.Factors.Contains key -> Some(times (Option.defaultValue 0.0 joker.Value))
+    | _ -> None
+
+let private loyaltyActive (joker: Joker) =
+    Regex.IsMatch(joker.Text, @"Active!|\b0 remaining")
+
+// The joker whose logic runs at each slot (None for a slot that gives nothing), as resolve in Scoring.fs
+let private actorsOf (jokers: Joker list) : (Joker * Joker option) list =
+    let slots = Array.ofList jokers
+
+    let rec go depth i =
+        let copy target =
+            if target = i || target >= slots.Length || depth + 1 > slots.Length + 1 then
+                None
+            else
+                go (depth + 1) target
+
+        match slots[i].Key with
+        | "j_blueprint" -> copy (i + 1)
+        | "j_brainstorm" -> copy 0
+        | _ -> Some i
+
+    [ for i in 0 .. slots.Length - 1 -> slots[i], go 0 i |> Option.map (fun target -> slots[target]) ]
+
 // What one card can meet: passes, doublings and factors 1.5 per pass, and the same for a held pass
 type private Reach =
     { Passes: int
@@ -219,17 +277,32 @@ type private Reach =
 
 // Whether the cards and jokers alone keep every value of the net inside the exact range of its arithmetic. The mult is
 // bounded by the passes, doublings and factors 1.5 the five best cards can meet, all adds taken before all factors, and
-// the jokers' main-phase adds and factors; Hanging Chad and Photograph act on one card, so they are counted once
+// the jokers' main-phase adds and factors; Hanging Chad and Photograph act on one card, so they are counted once.
+// Every count is over the jokers whose logic runs (a Blueprint or Brainstorm counts as its target)
 let private withinBounds (net: Net) (situation: Situation) (hand: Card list) (levels: Map<HandType, HandLevel>) =
     let limits = net.Limits
-    let jokers = situation.Jokers
+    let slots = actorsOf situation.Jokers
+    let jokers = slots |> List.choose snd
     let count key = jokers |> List.filter (fun j -> j.Key = key) |> List.length
     let chad, photograph = count "j_hanging_chad", count "j_photograph"
     let ancients = jokers |> List.choose (fun j -> if j.Key = "j_ancient" then ancientSuit j else None)
     let idols = jokers |> List.choose (fun j -> if j.Key = "j_idol" then idolTarget j else None)
     let adders = jokers |> List.filter (fun j -> net.AddsMult.Contains j.Key) |> List.length
     let chippers = jokers |> List.filter (fun j -> net.AddsChips.Contains j.Key) |> List.length
-    let polychromes = jokers |> List.filter (fun j -> j.Edition = Some Polychrome) |> List.length
+    let polychromes = situation.Jokers |> List.filter (fun j -> j.Edition = Some Polychrome) |> List.length
+    let baseballs = count "j_baseball"
+    let uncommon = situation.Jokers |> List.filter (fun j -> net.Uncommon.Contains j.Key) |> List.length
+
+    // fraction bits of a factor: 4 times it is a whole number
+    let factorBits (factor: float) =
+        match int (4.0 * factor) % 4 with
+        | 0 -> 0
+        | 2 -> 1
+        | _ -> 2
+
+    let factorWeight =
+        jokers |> List.sumBy (fun j -> factorOf net j |> Option.map factorBits |> Option.defaultValue 0)
+
     let flag b = if b then 1 else 0
     let top5 (values: int list) = values |> List.sortDescending |> List.truncate 5 |> List.sum
 
@@ -279,31 +352,45 @@ let private withinBounds (net: Net) (situation: Situation) (hand: Card list) (le
     let passes = top5 (cards |> List.map (fun r -> r.Passes)) + 2 * chad
     let heldWeight = cards |> List.sumBy (fun r -> r.HeldPasses * r.HeldHalves)
     let cardWeight = top5 (cards |> List.map (fun r -> r.Passes * r.Halves)) + 2 * chad * largest (fun r -> r.Halves)
-    let weight = cardWeight + heldWeight + polychromes
+    let cardFactors = cardWeight + heldWeight
+    let weight = cardFactors + polychromes + factorWeight + uncommon * baseballs
     let perPass (r: Reach) = r.Own + 8 * adders
 
     let adds =
         top5 (cards |> List.map (fun r -> r.Passes * perPass r))
         + 2 * chad * largest perPass
         + (cards |> List.sumBy (fun r -> r.HeldPasses * r.HeldAdd))
-    let slot = limits.Value + 10.0
+    // a main-phase add is at most the value plus 2 (Trousers), and a Holo adds 10 before it
+    let slot = limits.Value + 12.0
     let top (value: HandLevel -> float) = levels |> Map.toSeq |> Seq.map (snd >> value) |> Seq.max
 
-    let cardMult = (top (fun l -> l.Mult) + float adds) * 2.0 ** float doubling * 1.5 ** float (weight - polychromes)
+    let cardMult = (top (fun l -> l.Mult) + float adds) * 2.0 ** float doubling * 1.5 ** float cardFactors
 
+    // a slot adds its Holo and its own add, multiplies by its own factor and by 1.5 per Baseball Card if it is Uncommon,
+    // then by 1.5 for its Polychrome
     let mult =
-        jokers
+        slots
         |> List.fold
-            (fun m j ->
-                let main = net.Main.Contains j.Key
-                let factor = if j.Edition = Some Polychrome then 1.5 else 1.0
-                (m + (if main then slot else 10.0)) * (if main then 4.0 else 1.0) * factor)
+            (fun m (slotJoker, actor) ->
+                let main = actor |> Option.exists (fun a -> net.Main.Contains a.Key)
+
+                let own =
+                    match actor |> Option.bind (factorOf net) with
+                    | Some factor -> factor
+                    | None -> if main then 4.0 else 1.0
+
+                let baseball = if net.Uncommon.Contains slotJoker.Key then 1.5 ** float baseballs else 1.0
+                let polychrome = if slotJoker.Edition = Some Polychrome then 1.5 else 1.0
+                (m + (if main then slot else 10.0)) * own * baseball * polychrome)
             cardMult
 
+    // an own add of a counter is at most the value plus 15 (Runner)
     let chips =
         top (fun l -> l.Chips)
         + float passes * float (100 + 50 * chippers)
-        + (jokers |> List.sumBy (fun j -> 50.0 + (if net.Main.Contains j.Key then limits.Value else 0.0)))
+        + (slots
+           |> List.sumBy (fun (_, actor) ->
+               50.0 + (if actor |> Option.exists (fun a -> net.Main.Contains a.Key) then limits.Value + 15.0 else 0.0)))
 
     eachCard
     && weight <= limits.Weight
@@ -321,8 +408,13 @@ let private inScope (net: Net) (situation: Situation) (hand: Card list) (levels:
     && situation.Jokers.Length <= limits.Jokers
     && situation.Jokers
        |> List.forall (fun j ->
-           let value = Option.defaultValue 0.0 j.Value
-           not j.Debuffed && net.Keys.ContainsKey j.Key && isWhole value && value >= 0.0 && value <= limits.Value)
+           let value = valueOf j
+
+           not j.Debuffed
+           && net.Keys.ContainsKey j.Key
+           && (match factorOf net j with
+               | Some factor -> factor <= limits.Factor && isWhole (4.0 * factor)
+               | None -> isWhole value && value >= 0.0 && value <= limits.Value))
     && situation.Boss.IsNone
     && not situation.Balance
     && counted situation.HandsLeft limits.Left
@@ -402,7 +494,16 @@ let private encode (net: Net) (situation: Situation) (hand: Card list) (levels: 
                 let slot = i + 1
                 x[dim $"j{slot}_k_{net.Keys[joker.Key]}"] <- 1.0
                 joker.Edition |> Option.iter (fun e -> x[dim $"j{slot}_e_{e}"] <- 1.0)
-                x[dim $"j{slot}_v"] <- Option.defaultValue 0.0 joker.Value
+                // a joker that multiplies by an input factor never reads its value (Ramen's comes from its text)
+                if (factorOf net joker).IsNone then
+                    x[dim $"j{slot}_v"] <- valueOf joker
+
+                factorOf net joker
+                |> Option.iter (fun factor ->
+                    x[dim (if joker.Key = "j_obelisk" then $"j{slot}_fo" else $"j{slot}_fx")] <- factor - 1.0)
+
+                if joker.Key = "j_loyalty_card" && loyaltyActive joker then
+                    x[dim $"j{slot}_loy"] <- 1.0
 
                 match joker.Key with
                 | "j_ancient" ->

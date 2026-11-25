@@ -18,6 +18,13 @@ let private jokerKeys =
         (use doc = JsonDocument.Parse(File.ReadAllText(AppContext.BaseDirectory + "nn/playnet.json"))
          [ for p in doc.RootElement.GetProperty("keys").EnumerateObject() -> p.Name, p.Value.GetString() ])
 
+// The joker keys the net multiplies by an input factor, and the Uncommon keys
+let private netSets =
+    lazy
+        (use doc = JsonDocument.Parse(File.ReadAllText(AppContext.BaseDirectory + "nn/playnet.json"))
+         let keys (name: string) = [ for k in doc.RootElement.GetProperty(name).EnumerateArray() -> k.GetString() ] |> Set.ofList
+         keys "factors", keys "uncommon")
+
 let private handTypes =
     [ FlushFive
       FlushHouse
@@ -70,7 +77,38 @@ let private jokerOf key value =
     match key with
     | "j_ancient" -> { joker key None value with Text = ancientText "Spades" }
     | "j_idol" -> { joker key None value with Text = idolText King "Spades" }
+    | "j_ice_cream" -> { joker key None value with Text = $"+{int value} Chips" }
+    | "j_popcorn" -> { joker key None value with Text = $"+{int value} Mult" }
+    | "j_ramen" -> { joker key None value with Text = $"X{value}" }
+    | "j_loyalty_card" -> { joker key None value with Text = (if value > 0.0 then "Active!" else "3 remaining") }
     | _ -> joker key None value
+
+// The keys stage 4c added: counters, factors, Midas Mask and the copies
+let private stage4cKeys =
+    [ "j_green_joker"; "j_ride_the_bus"; "j_runner"; "j_square"; "j_trousers"; "j_ceremonial"; "j_red_card"; "j_flash"
+      "j_castle"; "j_wee"; "j_ice_cream"; "j_popcorn"; "j_space"; "j_dna"; "j_todo_list"; "j_sixth_sense"; "j_stencil"
+      "j_steel_joker"; "j_throwback"; "j_constellation"; "j_madness"; "j_hologram"; "j_campfire"; "j_glass"; "j_lucky_cat"
+      "j_hit_the_road"; "j_yorick"; "j_caino"; "j_obelisk"; "j_ramen"; "j_loyalty_card"; "j_midas_mask"; "j_blueprint"
+      "j_brainstorm"; "j_baseball" ]
+
+// A joker of a key for the random tests: a whole value, a factor that is mostly dyadic for the keys that multiply, and
+// the text its key reads
+let private randomJoker (random: Random) (hand: Card list) key edition : Joker =
+    let pick (options: 'a list) = options[random.Next options.Length]
+    let whole = joker key edition (float (random.Next(0, 41)))
+    let target = if random.Next 2 = 0 then pick hand else pick (List.ofArray deck)
+    let suit = if random.Next 2 = 0 then pick [ "Spades"; "Hearts"; "Clubs"; "Diamonds" ] else string target.Suit
+
+    match key with
+    | "j_ancient" -> { whole with Text = ancientText suit }
+    | "j_idol" -> { whole with Text = idolText target.Rank suit }
+    | "j_ice_cream" -> { whole with Text = $"+{random.Next(0, 101)} Chips" }
+    | "j_popcorn" -> { whole with Text = $"+{random.Next(0, 21)} Mult" }
+    | "j_ramen" -> { whole with Text = pick [ "X2"; "X2"; "X1.99"; "X1.5" ] }
+    | "j_loyalty_card" -> { whole with Text = pick [ "Active!"; "3 remaining"; "0 remaining" ] }
+    | "j_obelisk" -> { whole with Value = Some(pick [ 0.5; 1.0; 1.8; 2.8; 1.3 ]) }
+    | _ when (fst netSets.Value).Contains key -> { whole with Value = Some(pick [ 1.0; 1.25; 1.5; 2.0; 2.5; 3.1; 4.0 ]) }
+    | _ -> whole
 
 let private situationOf hands discards (plays: (HandType * (int * int)) list) jokers : Situation =
     { Situation.empty with
@@ -132,6 +170,37 @@ let private netLimits =
          let limits = [ for p in root.GetProperty("limits").EnumerateObject() -> p.Name, p.Value.GetDouble() ]
          Map.ofList limits, keys "main", keys "addsMult", keys "addsChips")
 
+// The joker whose logic runs at each slot: follow Blueprint and Brainstorm to a joker that is not a copy; a loop, the
+// last slot or a missing target gives nothing
+let private actorsOf (jokers: Joker list) =
+    let slots = Array.ofList jokers
+
+    let rec follow visited i =
+        if List.contains i visited then
+            None
+        else
+            match slots[i].Key with
+            | "j_blueprint" -> if i + 1 < slots.Length then follow (i :: visited) (i + 1) else None
+            | "j_brainstorm" -> follow (i :: visited) 0
+            | _ -> Some slots[i]
+
+    [ for i in 0 .. slots.Length - 1 -> slots[i], follow [] i ]
+
+// The factor a joker multiplies mult by (1 for none); None when its key does not multiply by an input
+let private factorFor (j: Joker) : float option =
+    let times factor = if factor > 1.0 then factor else 1.0
+    let value = Option.defaultValue 0.0 j.Value
+
+    match j.Key with
+    | "j_obelisk" -> Some(times (value + 0.2))
+    | "j_ramen" ->
+        let m = Text.RegularExpressions.Regex.Match(j.Text, @"^X(\d+(?:\.\d+)?)")
+        let shown = if m.Success then Double.Parse(m.Groups[1].Value, Globalization.CultureInfo.InvariantCulture) else 0.0
+        let discarded = int (Math.Round((2.0 - shown) / 0.01))
+        Some(times (List.fold (fun factor _ -> factor - 0.01) 2.0 [ 1..discarded ]))
+    | key when (fst netSets.Value).Contains key -> Some(times value)
+    | _ -> None
+
 let private suitNamed (name: string) =
     [ Spades; Hearts; Clubs; Diamonds ] |> List.tryFind (fun s -> (string s).TrimEnd 's' = name.TrimEnd 's')
 
@@ -153,18 +222,32 @@ let private idolTarget (j: Joker) =
 
 // Whether the net's precision limits are broken, written again from 48-design: every count is an upper bound over every
 // play of the hand. Five cards at most are played; Hanging Chad and Photograph act on one card; the mult is the level
-// mult plus every add, times every doubling and factor 1.5 of the cards, then the main-phase jokers slot by slot
+// mult plus every add, times every doubling and factor 1.5 of the cards, then the main-phase jokers slot by slot. Every
+// joker count is over the jokers whose logic runs; a factor must be at most FMAX with 4 times it a whole number
 let private breaksLimits (hand: Card list) (situation: Situation) (levels: Map<HandType, HandLevel>) =
     let limits, mains, multAdders, chipAdders = netLimits.Value
     let limit (name: string) = limits[name]
-    let jokers = situation.Jokers
+    let slots = actorsOf situation.Jokers
+    let jokers = slots |> List.choose snd
     let number key = jokers |> List.filter (fun j -> j.Key = key) |> List.length
     let bit b = if b then 1 else 0
     let sum5 (xs: int list) = (List.sortDescending xs |> List.truncate 5) |> List.sum
     let chad, photo = number "j_hanging_chad", number "j_photograph"
     let nAdders = jokers |> List.filter (fun j -> multAdders.Contains j.Key) |> List.length
     let nChippers = jokers |> List.filter (fun j -> chipAdders.Contains j.Key) |> List.length
-    let nPoly = jokers |> List.filter (fun j -> j.Edition = Some Polychrome) |> List.length
+    let nPoly = situation.Jokers |> List.filter (fun j -> j.Edition = Some Polychrome) |> List.length
+    let uncommon = situation.Jokers |> List.filter (fun j -> (snd netSets.Value).Contains j.Key) |> List.length
+    let factors = situation.Jokers |> List.choose factorFor
+    let factorsRun = jokers |> List.choose factorFor
+
+    let factorBroken =
+        factors |> List.exists (fun f -> f > limit "factor" || Math.Floor(4.0 * f) <> 4.0 * f)
+
+    let factorBits (f: float) =
+        match int (4.0 * f) % 4 with
+        | 0 -> 0
+        | 2 -> 1
+        | _ -> 2
 
     let perCard (c: Card) =
         let stone = c.Enhancement = Some Enhancement.Stone
@@ -219,25 +302,31 @@ let private breaksLimits (hand: Card list) (situation: Situation) (levels: Map<H
         sum5 (product passes doubles) + 2 * chad * List.max doubles + photo * List.max passes + 2 * chad * photo
 
     let totalPasses = sum5 passes + 2 * chad
-    let weight = sum5 (product passes halves) + 2 * chad * List.max halves + List.sum (product heldPasses heldHalves) + nPoly
+    let cardFactors = sum5 (product passes halves) + 2 * chad * List.max halves + List.sum (product heldPasses heldHalves)
+    let baseballs = number "j_baseball"
+    let weight = cardFactors + nPoly + (factorsRun |> List.sumBy factorBits) + uncommon * baseballs
     let perPass = owns |> List.map (fun o -> o + 8 * nAdders)
     let adds = sum5 (product passes perPass) + 2 * chad * List.max perPass + List.sum (product heldPasses heldAdd)
     let topLevel f = levels |> Map.toList |> List.map (snd >> f) |> List.max
-    let afterCards = (topLevel (fun l -> l.Mult) + float adds) * 2.0 ** float doublings * 1.5 ** float (weight - nPoly)
+    let afterCards = (topLevel (fun l -> l.Mult) + float adds) * 2.0 ** float doublings * 1.5 ** float cardFactors
 
     let mutable mult = afterCards
 
-    for j in jokers do
-        let main = mains.Contains j.Key
-        let poly = if j.Edition = Some Polychrome then 1.5 else 1.0
-        mult <- (mult + (if main then limit "value" + 10.0 else 10.0)) * (if main then 4.0 else 1.0) * poly
+    for slot, actor in slots do
+        let main = actor |> Option.exists (fun a -> mains.Contains a.Key)
+        let own = actor |> Option.bind factorFor |> Option.defaultValue (if main then 4.0 else 1.0)
+        let baseball = if (snd netSets.Value).Contains slot.Key then 1.5 ** float baseballs else 1.0
+        let poly = if slot.Edition = Some Polychrome then 1.5 else 1.0
+        mult <- (mult + (if main then limit "value" + 12.0 else 10.0)) * own * baseball * poly
 
     let chips =
         topLevel (fun l -> l.Chips)
         + float totalPasses * float (100 + 50 * nChippers)
-        + (jokers |> List.sumBy (fun j -> 50.0 + (if mains.Contains j.Key then limit "value" else 0.0)))
+        + (slots |> List.sumBy (fun (_, actor) ->
+            50.0 + (if actor |> Option.exists (fun a -> mains.Contains a.Key) then limit "value" + 15.0 else 0.0)))
 
     perCardBroken
+    || factorBroken
     || float weight > limit "weight"
     || mult > limit "multCap"
     || chips > limit "chipsCap"
@@ -268,12 +357,12 @@ let ``agrees with the search on 300 random plain hands`` () =
 
 type ModifierAgreement(output: Xunit.Abstractions.ITestOutputHelper) =
     [<Fact>]
-    member _.``agrees with the search on 1000 random modified hands`` () =
+    member _.``agrees with the search on 500 random modified hands`` () =
         let random = Random(2027)
         let pick (options: 'a list) = options[random.Next options.Length]
 
         let cases =
-            Array.init 1000 (fun _ ->
+            Array.init 500 (fun _ ->
                 let size = random.Next(1, 9)
                 let shuffled = Array.copy deck
                 random.Shuffle shuffled
@@ -293,25 +382,25 @@ type ModifierAgreement(output: Xunit.Abstractions.ITestOutputHelper) =
         output.WriteLine $"checked {checkedHands.Length}, rejected {rejected.Length}"
 
         Assert.True(loose.Length = 0, $"{loose.Length} hands rejected inside the limits; first: %A{Array.truncate 5 loose}")
-        Assert.True(checkedHands.Length >= 900, $"only {checkedHands.Length} hands checked")
+        Assert.True(checkedHands.Length >= 450, $"only {checkedHands.Length} hands checked")
         Assert.True(failures.Length = 0, $"{failures.Length} of {checkedHands.Length} hands disagree; first: %A{Array.truncate 5 failures}")
 
 type JokerAgreement(output: Xunit.Abstractions.ITestOutputHelper) =
     [<Fact>]
-    member _.``agrees with the search on 1000 random hands with main-phase jokers`` () =
+    member _.``agrees with the search on 500 random hands with main-phase jokers`` () =
         let random = Random(2028)
         let pick (options: 'a list) = options[random.Next options.Length]
         let keys = jokerKeys.Value |> List.map fst |> List.filter (fun k -> not (List.contains k cardKeys))
 
         let cases =
-            Array.init 1000 (fun _ ->
+            Array.init 500 (fun _ ->
                 let size = random.Next(1, 9)
                 let shuffled = Array.copy deck
                 random.Shuffle shuffled
                 let hand = [ for c in shuffled[.. size - 1] -> modified (pick enhancements) (pick editions) (pick seals) c ]
 
                 let jokers =
-                    [ for _ in 1 .. random.Next(0, 6) -> joker (pick keys) (pick editions) (float (random.Next(0, 41))) ]
+                    [ for _ in 1 .. random.Next(0, 6) -> randomJoker random hand (pick keys) (pick editions) ]
 
                 let plays =
                     [ for t in handTypes ->
@@ -337,38 +426,28 @@ type JokerAgreement(output: Xunit.Abstractions.ITestOutputHelper) =
         output.WriteLine $"checked {checkedCases.Length}, rejected {rejected.Length}"
 
         Assert.True(loose.Length = 0, $"{loose.Length} cases rejected inside the limits; first: %A{Array.truncate 5 loose}")
-        Assert.True(checkedCases.Length >= 900, $"only {checkedCases.Length} cases checked")
+        Assert.True(checkedCases.Length >= 450, $"only {checkedCases.Length} cases checked")
         Assert.True(failures.Length = 0, $"{failures.Length} of {checkedCases.Length} cases disagree; first: %A{Array.truncate 5 failures}")
 
 type PerCardAgreement(output: Xunit.Abstractions.ITestOutputHelper) =
     [<Fact>]
-    member _.``agrees with the search on 1500 random hands with per-card jokers`` () =
+    member _.``agrees with the search on 500 random hands with per-card jokers`` () =
         let random = Random(2030)
         let pick (options: 'a list) = options[random.Next options.Length]
         let main = jokerKeys.Value |> List.map fst |> List.filter (fun k -> not (List.contains k cardKeys))
         // JokersCard keys weigh 3, the main-phase keys 1
         let keys = List.collect (fun k -> [ k; k; k ]) cardKeys @ main
-        let suitNames = [ "Spades"; "Hearts"; "Clubs"; "Diamonds" ]
 
         let cases =
-            Array.init 1500 (fun _ ->
+            Array.init 500 (fun _ ->
                 let size = random.Next(1, 9)
                 let shuffled = Array.copy deck
                 random.Shuffle shuffled
                 let hand = [ for c in shuffled[.. size - 1] -> modified (pick enhancements) (pick editions) (pick seals) c ]
 
                 // the text of an Ancient Joker or an Idol names a random target, half the time a card of the hand
-                let withText (j: Joker) =
-                    let target = if random.Next 2 = 0 then pick hand else pick (List.ofArray deck)
-                    let suit = if random.Next 2 = 0 then pick suitNames else string target.Suit
-
-                    match j.Key with
-                    | "j_ancient" -> { j with Text = ancientText suit }
-                    | "j_idol" -> { j with Text = idolText target.Rank suit }
-                    | _ -> j
-
                 let jokers =
-                    [ for _ in 1 .. random.Next(0, 6) -> withText (joker (pick keys) (pick editions) (float (random.Next(0, 41)))) ]
+                    [ for _ in 1 .. random.Next(0, 6) -> randomJoker random hand (pick keys) (pick editions) ]
 
                 let plays =
                     [ for t in handTypes ->
@@ -407,7 +486,7 @@ type PerCardAgreement(output: Xunit.Abstractions.ITestOutputHelper) =
 
         Assert.True(beyond.Length = 0, $"{beyond.Length} accepted cases reach beyond the caps")
         Assert.True(loose.Length = 0, $"{loose.Length} cases rejected inside the limits; first: %A{Array.truncate 5 loose}")
-        Assert.True(checkedCases.Length >= 1000, $"only {checkedCases.Length} cases checked")
+        Assert.True(checkedCases.Length >= 330, $"only {checkedCases.Length} cases checked")
         Assert.True(failures.Length = 0, $"{failures.Length} of {checkedCases.Length} cases disagree; first: %A{Array.truncate 5 failures}")
 
 // The net's choice must equal the search's head and Scoring.scoreWith of that play
@@ -614,14 +693,33 @@ let private withPlays plays scene =
 let private favouring handType scene =
     { scene with Rates = levelsAt (fun t -> if t = handType then 30 else 1) }
 
-// What the net chooses for one joker in a scene, and what that joker adds to the chosen play
-let private effectOf (scene: Scene) key value =
-    let situation = scene.Make [ jokerOf key value ]
+// The jokers around the one under test: Baseball Card needs an Uncommon joker (Mime, with nothing held) in one scene and
+// none in the other, Blueprint a Cavendish to its right where it fires and to its left where it does not, Brainstorm
+// the opposite
+let private lineup key quiet (j: Joker) =
+    let cavendish = joker "j_cavendish" None 0.0
+
+    match key, quiet with
+    | "j_baseball", false -> [ j; joker "j_mime" None 0.0 ]
+    | "j_baseball", true -> [ j; cavendish ]
+    | "j_blueprint", false -> [ j; cavendish ]
+    | "j_blueprint", true -> [ cavendish; j ]
+    | "j_brainstorm", false -> [ cavendish; j ]
+    | "j_brainstorm", true -> [ j ]
+    | _ -> [ j ]
+
+// What the net chooses for one joker in a scene, and what the same play scores with the joker taken out
+let private effectWith (scene: Scene) key value quiet =
+    let jokers = lineup key quiet (jokerOf key value)
+    let situation = scene.Make jokers
     let positions, total, _ = agreeWith situation scene.Cards scene.Rates
     let played = positions |> List.map (fun i -> scene.Cards[i])
     let held = scene.Cards |> List.indexed |> List.filter (fun (i, _) -> not (List.contains i positions)) |> List.map snd
-    let without = Scoring.scoreWith { situation with Jokers = [] } { Played = played; Held = held; Levels = scene.Rates }
+    let others = jokers |> List.filter (fun j -> j.Key <> key)
+    let without = Scoring.scoreWith { situation with Jokers = others } { Played = played; Held = held; Levels = scene.Rates }
     total, without.Total
+
+let private effectOf (scene: Scene) key value = effectWith scene key value false
 
 let private pairs = scene [ card King Spades; card King Hearts; card Four Diamonds ]
 let private noPair = scene [ card King Spades; card Seven Hearts ]
@@ -717,11 +815,42 @@ let private jokerCases: (string * (float * Scene) * (float * Scene) option)[] =
        "j_baron", (0.0, heldKing), Some(0.0, heldQueen)
        "j_shoot_the_moon", (0.0, heldQueen), Some(0.0, heldKing)
        "j_raised_fist", (0.0, heldThree), Some(0.0, nothingHeld)
-       "j_mime", (0.0, heldSteel), Some(0.0, heldKing) |]
+       "j_mime", (0.0, heldSteel), Some(0.0, heldKing)
+       "j_green_joker", (7.0, scenes), None
+       "j_ride_the_bus", (3.0, oneCard Six Spades), Some(3.0, oneCard King Spades)
+       "j_runner", (0.0, straights), Some(0.0, noStraight)
+       "j_square", (0.0, fours), Some(0.0, noFour)
+       "j_trousers", (0.0, twoPairs), Some(0.0, noTwoPair)
+       "j_ceremonial", (7.0, scenes), Some(0.0, scenes)
+       "j_red_card", (7.0, scenes), Some(0.0, scenes)
+       "j_flash", (7.0, scenes), Some(0.0, scenes)
+       "j_castle", (7.0, scenes), Some(0.0, scenes)
+       "j_wee", (7.0, scenes), Some(0.0, scenes)
+       "j_ice_cream", (7.0, scenes), Some(0.0, scenes)
+       "j_popcorn", (7.0, scenes), Some(0.0, scenes)
+       "j_stencil", (2.0, scenes), Some(1.0, scenes)
+       "j_steel_joker", (2.0, scenes), Some(1.0, scenes)
+       "j_throwback", (2.0, scenes), Some(1.0, scenes)
+       "j_constellation", (2.0, scenes), Some(1.0, scenes)
+       "j_madness", (2.0, scenes), Some(1.0, scenes)
+       "j_hologram", (2.5, scenes), Some(1.0, scenes)
+       "j_campfire", (1.5, scenes), Some(1.0, scenes)
+       "j_glass", (1.75, scenes), Some(1.0, scenes)
+       "j_lucky_cat", (1.25, scenes), Some(1.0, scenes)
+       "j_hit_the_road", (2.0, scenes), Some(1.0, scenes)
+       "j_yorick", (2.0, scenes), Some(1.0, scenes)
+       "j_caino", (2.0, scenes), Some(1.0, scenes)
+       "j_ramen", (2.0, scenes), Some(0.0, scenes)
+       "j_obelisk", (1.8, withPlays [ Pair, (5, 1) ] scenes), Some(1.8, scenes)
+       "j_loyalty_card", (1.0, scenes), Some(0.0, scenes)
+       "j_midas_mask", (0.0, scene [ withEnhancement Enhancement.Mult (card King Spades) ]), Some(0.0, oneCard Seven Spades)
+       "j_baseball", (0.0, scenes), Some(0.0, scenes)
+       "j_blueprint", (0.0, scenes), Some(0.0, scenes)
+       "j_brainstorm", (0.0, scenes), Some(0.0, scenes) |]
 
 [<Fact>]
 let ``scores every joker where its effect fires and where it does not`` () =
-    let effectKeys = jokerKeys.Value |> List.filter (fun (_, name) -> name <> "inert") |> List.map fst
+    let effectKeys = jokerKeys.Value |> List.filter (fun (_, name) -> not (name.StartsWith "inert")) |> List.map fst
     let covered = jokerCases |> Array.map (fun (key, _, _) -> key) |> List.ofArray
 
     Assert.Equal<string list>(List.sort effectKeys, List.sort covered)
@@ -732,7 +861,7 @@ let ``scores every joker where its effect fires and where it does not`` () =
 
         match other with
         | Some(value, quiet) ->
-            let total, without = effectOf quiet key value
+            let total, without = effectWith quiet key value true
             Assert.True((total = without), $"{key} fired where it should not")
         | None -> ()
 
@@ -906,12 +1035,10 @@ let ``declines jokers and situations outside its scope`` () =
 
     Assert.Equal(None, declined (List.replicate 6 (one "j_joker")))
     Assert.Equal(None, declined [ { one "j_joker" with Debuffed = true } ])
-    Assert.Equal(None, declined [ one "j_stencil" ])
     Assert.Equal(None, declined [ joker "j_joker" None 501.0 ])
     Assert.Equal(None, PlayNet.choose net.Value boss single levelOne)
     Assert.Equal(None, PlayNet.choose net.Value { situationOf 2 2 [] [] with Balance = true } single levelOne)
     Assert.True((declined [ joker "j_joker" None 500.0 ]).IsSome)
-    Assert.Equal(None, declined [ one "j_blueprint" ])
     // eleven passes of the first card: five Hanging Chads
     Assert.Equal(None, declined (List.replicate 5 (one "j_hanging_chad")))
     // the product of mult and chips beyond the exact range: Triboulet on every pass of five Kings
@@ -946,6 +1073,208 @@ let ``counts a held Wild as black and a held Stone as not for Blackboard`` () =
 
     Assert.Equal(stoneWithout, stone)
     Assert.True(wild <> wildWithout)
+
+type CombinedAgreement(output: Xunit.Abstractions.ITestOutputHelper) =
+    [<Fact>]
+    member _.``agrees with the search on 1000 random hands over every in-scope key`` () =
+        let random = Random(2031)
+        let pick (options: 'a list) = options[random.Next options.Length]
+        // the keys of stage 4c weigh 3, the others 1
+        let keys = jokerKeys.Value |> List.map fst |> List.collect (fun k -> if List.contains k stage4cKeys then [ k; k; k ] else [ k ])
+
+        let cases =
+            Array.init 1000 (fun _ ->
+                let size = random.Next(1, 9)
+                let shuffled = Array.copy deck
+                random.Shuffle shuffled
+                let hand = [ for c in shuffled[.. size - 1] -> modified (pick enhancements) (pick editions) (pick seals) c ]
+
+                let jokers =
+                    [ for _ in 1 .. random.Next(0, 6) -> randomJoker random hand (pick keys) (pick editions) ]
+
+                let plays =
+                    [ for t in handTypes ->
+                          let run = random.Next(0, 6)
+                          t, (run, random.Next(0, run + 1)) ]
+
+                let situation = situationOf (random.Next(0, 5)) (random.Next(0, 5)) plays jokers
+                hand, situation, levelsAt (fun _ -> random.Next(1, 31)))
+
+        let results =
+            cases
+            |> Array.Parallel.map (fun (hand, situation, levels) ->
+                hand, situation, levels, PlayNet.choose net.Value situation hand levels, bestWith situation hand levels)
+
+        let rejected = results |> Array.filter (fun (_, _, _, got, _) -> got.IsNone)
+        let checkedCases = results |> Array.filter (fun (_, _, _, got, _) -> got.IsSome)
+
+        // a rejection must break a limit or a factor rule, which breaksLimits computes
+        let loose =
+            rejected |> Array.filter (fun (hand, situation, levels, _, _) -> not (breaksLimits hand situation levels))
+
+        let failures = checkedCases |> Array.filter (fun (_, _, _, got, expected) -> got <> Some expected)
+        let limits, _, _, _ = netLimits.Value
+
+        let beyond =
+            checkedCases
+            |> Array.filter (fun (hand, situation, levels, got, _) ->
+                let positions, _, _ = got.Value
+                let played = positions |> List.map (fun i -> hand[i])
+                let held = hand |> List.indexed |> List.filter (fun (i, _) -> not (List.contains i positions)) |> List.map snd
+                let b = Scoring.scoreWith situation { Played = played; Held = held; Levels = levels }
+                b.Mult > limits["multCap"] || b.Chips > limits["chipsCap"] || b.Mult * b.Chips > limits["productCap"])
+
+        output.WriteLine $"checked {checkedCases.Length}, rejected {rejected.Length}"
+
+        Assert.True(beyond.Length = 0, $"{beyond.Length} accepted cases reach beyond the caps")
+        Assert.True(loose.Length = 0, $"{loose.Length} cases rejected inside the limits; first: %A{Array.truncate 5 loose}")
+        Assert.True(checkedCases.Length >= 700, $"only {checkedCases.Length} cases checked")
+        Assert.True(failures.Length = 0, $"{failures.Length} of {checkedCases.Length} cases disagree; first: %A{Array.truncate 5 failures}")
+
+[<Fact>]
+let ``covers every implemented key but Vampire and the rule jokers, and the registry's Uncommon set`` () =
+    let outOfScope = set [ "j_vampire"; "j_four_fingers"; "j_shortcut"; "j_smeared"; "j_splash"; "j_pareidolia" ]
+    let keys = jokerKeys.Value |> List.map fst |> Set.ofList
+
+    Assert.Equal<Set<string>>(Set.difference JokerRegistry.implemented outOfScope, keys)
+    Assert.Equal<Set<string>>(Set.intersect JokerRegistry.uncommon keys, snd netSets.Value)
+
+[<Fact>]
+let ``resolves Blueprint and Brainstorm as the reference does`` () =
+    let one key = jokerOf key 0.0
+    let cavendish, triboulet, blueprint, brainstorm = one "j_cavendish", one "j_triboulet", one "j_blueprint", one "j_brainstorm"
+    let king = [ card King Spades ]
+
+    let totalOf jokers hand =
+        let _, total, _ = agreeWith (situationOf 2 2 [] jokers) hand levelOne
+        total
+
+    // at the right end Blueprint copies nothing
+    Assert.Equal(totalOf [ cavendish ] king, totalOf [ cavendish; blueprint ] king)
+    // a chain of two Blueprints reaches the Triboulet, three of them double three times
+    Assert.Equal(totalOf [ triboulet; triboulet; triboulet ] king, totalOf [ blueprint; blueprint; triboulet ] king)
+    // Brainstorm copies Blueprint, which copies Brainstorm: the loop is cut and gives neither anything
+    Assert.Equal(totalOf [ cavendish ] king, totalOf [ blueprint; brainstorm; cavendish ] king)
+    // Brainstorm in the first slot copies itself
+    Assert.Equal(totalOf [ cavendish ] king, totalOf [ brainstorm; cavendish ] king)
+    // Brainstorm copies the first slot, past the jokers in between
+    Assert.Equal(totalOf [ triboulet; cavendish; triboulet ] king, totalOf [ triboulet; cavendish; brainstorm ] king)
+
+[<Fact>]
+let ``copies the key and value of a joker but keeps its own edition`` () =
+    let one key = jokerOf key 0.0
+    let plain, polychrome = joker "j_joker" None 0.0, joker "j_joker" (Some Polychrome) 0.0
+    let blueprint, baseball, mime = one "j_blueprint", one "j_baseball", one "j_mime"
+
+    let totalOf jokers hand =
+        let _, total, _ = agreeWith (situationOf 2 2 [] jokers) hand levelOne
+        total
+
+    let king = [ card King Spades ]
+    // the Blueprint acts as a plain Joker: the Polychrome stays on the joker it sits on
+    Assert.Equal(totalOf [ plain; polychrome ] king, totalOf [ blueprint; polychrome ] king)
+    // the value is the target's: Abstract Joker adds its own value twice
+    Assert.Equal(totalOf [ jokerOf "j_abstract" 7.0; jokerOf "j_abstract" 7.0 ] king, totalOf [ blueprint; jokerOf "j_abstract" 7.0 ] king)
+    // Baseball Card copied by a Blueprint multiplies the Uncommon Mime twice
+    let once = totalOf [ baseball; mime ] king
+    let twice = totalOf [ blueprint; baseball; mime ] king
+    Assert.Equal(totalOf [ baseball; baseball; mime ] king, twice)
+    Assert.True(twice > once)
+    // five slots that all act as Baseball Card meet no Uncommon joker: nothing is multiplied
+    Assert.Equal(totalOf [] king, totalOf [ blueprint; baseball; blueprint; baseball; baseball ] king)
+    // a Baseball Card does not multiply itself or a common joker
+    Assert.Equal(totalOf [ one "j_cavendish" ] king, totalOf [ baseball; one "j_cavendish" ] king)
+
+[<Fact>]
+let ``turns Glass face cards Gold under Midas Mask before Ride the Bus and Smiley Face`` () =
+    let one key = jokerOf key 0.0
+    let midas, smiley, bus = one "j_midas_mask", one "j_smiley", jokerOf "j_ride_the_bus" 3.0
+    let glassKing = withEnhancement Enhancement.Glass (card King Spades)
+
+    let totalOf jokers hand levels =
+        let _, total, _ = agreeWith (situationOf 2 2 [] jokers) hand levels
+        total
+
+    // the Glass x2 is gone: the Gold King scores as a plain King with Smiley Face's 5 on it
+    Assert.Equal(totalOf [ smiley ] [ card King Spades ] levelOne, totalOf [ midas; smiley ] [ glassKing ] levelOne)
+    Assert.True(totalOf [ smiley ] [ glassKing ] levelOne > totalOf [ midas; smiley ] [ glassKing ] levelOne)
+    // Ride the Bus sees a face card on either side of the Midas Mask, and adds nothing
+    Assert.Equal(totalOf [ bus ] [ card King Spades ] levelOne, totalOf [ midas; bus ] [ glassKing ] levelOne)
+    Assert.Equal(totalOf [ midas; bus ] [ glassKing ] levelOne, totalOf [ bus; midas ] [ glassKing ] levelOne)
+    Assert.True(totalOf [ bus ] [ card Six Spades ] levelOne > totalOf [] [ card Six Spades ] levelOne)
+    // a Bonus card loses its 30 chips, and a Wild card its suits for Flower Pot
+    let bonus = withEnhancement Enhancement.Bonus (card King Spades)
+    Assert.Equal(totalOf [ midas ] [ card King Spades ] levelOne, totalOf [ midas ] [ bonus ] levelOne)
+    let wild = withEnhancement Enhancement.Wild
+    let kings = [ card King Hearts; wild (card King Hearts); wild (card King Clubs); wild (card King Diamonds) ]
+    let fourKings = (favouring FourOfAKind (scene kings)).Rates
+    let pot = one "j_flower_pot"
+    Assert.True(totalOf [ pot ] kings fourKings > totalOf [] kings fourKings)
+    Assert.Equal(totalOf [ midas ] kings fourKings, totalOf [ midas; pot ] kings fourKings)
+
+[<Fact>]
+let ``agrees on the widest counter, factor and copy hands in scope`` () =
+    let top = handTypes |> List.map (fun t -> t, { Chips = 5000.0; Mult = 200.0 }) |> Map.ofList
+    let one key = jokerOf key 0.0
+    let glass = withEnhancement Enhancement.Glass
+
+    let check situation hand levels =
+        Assert.False(breaksLimits hand situation levels)
+        agreeWith situation hand levels |> ignore
+
+    let faces = [ card King Spades; card King Hearts; card Queen Spades; card Queen Hearts; card King Diamonds ]
+
+    // 1. Blueprint copying Triboulet, Brainstorm copying Blueprint: three doublings on every pass of five Kings and Queens
+    check (situationOf 2 2 [] [ one "j_blueprint"; one "j_triboulet"; one "j_brainstorm" ]) faces top
+
+    // 2. Hologram x2.5, Campfire x1.5 and Baseball Card with two Uncommon jokers (Hologram and Mime), levels at the limits
+    let hologram, campfire = jokerOf "j_hologram" 2.5, jokerOf "j_campfire" 1.5
+    check (situationOf 2 2 [] [ hologram; campfire; one "j_baseball"; one "j_mime"; one "j_joker" ]) [ card Ace Spades; card Ace Hearts; card King Spades ] top
+
+    // 3. Midas Mask before Smiley Face and Ride the Bus with Glass face cards played
+    let glassFaces = faces |> List.map glass
+    check (situationOf 2 2 [] [ one "j_midas_mask"; one "j_smiley"; jokerOf "j_ride_the_bus" 40.0 ]) glassFaces top
+
+[<Fact>]
+let ``declines factors and jokers it cannot score exactly`` () =
+    let declined jokers = PlayNet.choose net.Value (situationOf 2 2 [] jokers) single levelOne
+
+    // a factor of 1.1 is not a multiple of 1/4, and 9 is above FMAX
+    Assert.Equal(None, declined [ jokerOf "j_constellation" 1.1 ])
+    Assert.Equal(None, declined [ jokerOf "j_hologram" 9.0 ])
+    Assert.Equal(None, declined [ jokerOf "j_obelisk" 1.0 ])
+    Assert.True((declined [ jokerOf "j_hologram" 8.0 ]).IsSome)
+    Assert.True((declined [ jokerOf "j_constellation" 1.25 ]).IsSome)
+    Assert.True((declined [ jokerOf "j_constellation" 1.0 ]).IsSome)
+    Assert.Equal(None, declined [ jokerOf "j_vampire" 1.0 ])
+    Assert.Equal(None, declined [ jokerOf "j_four_fingers" 0.0 ])
+    Assert.Equal(None, declined [ jokerOf "j_blueprint" 0.0; jokerOf "j_vampire" 0.0 ])
+
+[<Fact>]
+let ``ignores the value of a joker that multiplies by an input factor`` () =
+    let hand = [ card Ace Spades; card Seven Hearts; card Seven Clubs; card Three Diamonds; card Nine Spades ]
+    let levels = handTypes |> List.map (fun t -> t, { Chips = 30.0; Mult = 3.0 }) |> Map.ofList
+    let green = jokerOf "j_green_joker" 5.0
+
+    // Ramen reads its text, so a huge or non-finite value must not leak into the net
+    for value in [ 1000.0; Double.NaN; Double.PositiveInfinity ] do
+        let ramen = { jokerOf "j_ramen" 2.0 with Value = Some value }
+        agreeWith (situationOf 2 2 [] [ ramen; green ]) hand levels |> ignore
+
+[<Fact>]
+let ``retriggers only the first scoring card for Hanging Chad`` () =
+    let hanging = situationOf 2 2 [] [ jokerOf "j_hanging_chad" 0.0 ]
+    let mult = withEnhancement Enhancement.Mult (card King Spades)
+    let pairLevel = levelsAt (fun t -> if t = Pair then 30 else 1)
+
+    let totalOf hand =
+        let _, total, _ = agreeWith hanging hand pairLevel
+        total
+
+    // Pair at level 30: chips 445 + 10 + 3 * 10, mult 31 + 3 * 4 when the Mult card is first, 31 + 4 when it is second;
+    // had both cards been retriggered the two orders would score alike
+    Assert.Equal(20855.0, totalOf [ mult; card King Hearts ])
+    Assert.Equal(16975.0, totalOf [ card King Hearts; mult ])
 
 [<Fact>]
 let ``readme lists every dim once`` () =

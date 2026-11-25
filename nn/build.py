@@ -44,7 +44,6 @@ SUITS = ["S", "H", "C", "D"]
 ENHANCEMENTS = ["Bonus", "Mult", "Wild", "Glass", "Steel", "Stone", "Gold", "Lucky"]
 EDITIONS = ["Foil", "Holo", "Polychrome", "Negative"]
 SEALS = ["Red", "Blue", "Gold", "Purple"]
-WINDOW = 5
 PAIRS = [(k, m) for k in range(1, POSITIONS + 1) for m in range(k + 1, POSITIONS + 1)]
 ORDERED = [
     (k, m) for k in range(1, POSITIONS + 1) for m in range(1, POSITIONS + 1) if k != m
@@ -54,8 +53,14 @@ ORDERED = [
 MULT_CAP = 2**30
 CHIPS_CAP = 2**14 - 1
 PRODUCT_CAP = 4 * 10**12
-JOKER_FACTOR = 4
-VALUE_GATE = float(VALUE_MAX + 1)
+FMAX = 8
+FACTOR_K = 4 * FMAX
+K_BITS = FACTOR_K.bit_length()
+BASEBALLS = JOKERS - 1
+POLY_COPIES = BASEBALLS + 1
+FACTOR_GATE = float(FMAX)
+TID_GATE = 15.0
+VALUE_GATE = float(VALUE_MAX + 20)
 BANNER_GATE = float(30 * LEFT_MAX + 1)
 RUN_GATE = float(PLAYS_MAX + 1)
 FRAC = WMAX
@@ -64,7 +69,8 @@ CHIP_DIGITS = math.ceil(CHIPS_CAP.bit_length() / CHIP_RADIX_BITS)
 FLOOR_DIGITS = math.ceil(PRODUCT_CAP.bit_length() / FLOOR_RADIX_BITS)
 KEY_BIG = float(256 * (PRODUCT_CAP + 1))
 GATE = float(MULT_CAP + 1)
-JOKER_GATE = float(JOKER_FACTOR * 1.5 * MULT_CAP + 1)
+SHIFT_GATE = float(MULT_CAP * 2 ** (K_BITS - 1))
+COPY_GATE = float(math.ceil(1.5**POLY_COPIES * MULT_CAP) + 1)
 
 # One card pass: its own adds up to 14 (Mult 4, Holo 10) and each joker adds up to 8, then at most DOUBLES doublings and HALVES factors of 1.5
 PASS_MULT_CAP = math.ceil((14 + 8 * JOKERS) * 2**DOUBLES * 1.5**HALVES)
@@ -84,6 +90,11 @@ ADD_CHIPS = {
     "j_devious": ("ct_Straight", 100),
     "j_crafty": ("ct_Flush", 80),
 }
+# value plus an amount that depends on the hand: (condition dim, amount per condition)
+VALUE_PLUS_CHIPS = {
+    "j_runner": ("ct_Straight", 15),
+    "j_square": ("sz4", 4),
+}
 ADD_MULT = {
     "j_joker": (None, 4),
     "j_gros_michel": (None, 15),
@@ -93,6 +104,9 @@ ADD_MULT = {
     "j_crazy": ("ct_Straight", 12),
     "j_droll": ("ct_Flush", 10),
     "j_half": ("P4_nl", 20),
+}
+VALUE_PLUS_MULT = {
+    "j_trousers": ("ct_TwoPair", 2),
 }
 TIMES_MULT = {
     "j_cavendish": (None, 3),
@@ -107,6 +121,7 @@ TIMES_MULT = {
     "j_acrobat": ("hz", 3),
     "j_card_sharp": ("cs", 3),
     "j_drivers_license": ("d16_{j}", 3),
+    "j_loyalty_card": ("eloy_{j}", 4),
 }
 VALUE_MULT = [
     "j_abstract",
@@ -114,8 +129,36 @@ VALUE_MULT = [
     "j_fortune_teller",
     "j_swashbuckler",
     "j_bootstraps",
+    "j_ceremonial",
+    "j_red_card",
+    "j_flash",
+    "j_popcorn",
 ]
-VALUE_CHIPS = ["j_blue_joker", "j_stone", "j_bull"]
+VALUE_CHIPS = ["j_blue_joker", "j_stone", "j_bull", "j_castle", "j_wee", "j_ice_cream"]
+# value plus 1, and for Ride the Bus only while no scoring card is a face card
+GREEN_KEY = "j_green_joker"
+BUS_KEY = "j_ride_the_bus"
+# the mult times a factor that is an input of the joker: its value, or its text for Ramen
+FACTOR_KEYS = [
+    "j_stencil",
+    "j_steel_joker",
+    "j_throwback",
+    "j_constellation",
+    "j_madness",
+    "j_hologram",
+    "j_campfire",
+    "j_glass",
+    "j_lucky_cat",
+    "j_hit_the_road",
+    "j_yorick",
+    "j_caino",
+    "j_ramen",
+]
+# value + 0.2 times, when another hand type was played at least as often
+OBELISK_KEY = "j_obelisk"
+COPY_KEYS = ["j_blueprint", "j_brainstorm"]
+MIDAS_KEY = "j_midas_mask"
+BASEBALL_KEY = "j_baseball"
 SITUATION_KEYS = ["j_banner", "j_mystic_summit", "j_supernova"]
 
 # Per-card jokers: key -> (card feature that makes it fire, amount), added to every pass of a scoring card
@@ -161,9 +204,15 @@ MAIN_KEYS = [
     *TIMES_MULT,
     *VALUE_MULT,
     *VALUE_CHIPS,
+    *VALUE_PLUS_CHIPS,
+    *VALUE_PLUS_MULT,
     *SITUATION_KEYS,
+    GREEN_KEY,
+    BUS_KEY,
 ]
 EFFECT_KEYS = [*MAIN_KEYS, *CARD_KEYS]
+# the keys whose slot is read through a copy
+COPIED_KEYS = [*EFFECT_KEYS, BASEBALL_KEY]
 INERT_KEYS = [
     "j_misprint",
     "j_superposition",
@@ -211,8 +260,97 @@ INERT_KEYS = [
     "j_reserved_parking",
     "j_bloodstone",
     "j_hiker",
+    "j_space",
+    "j_dna",
+    "j_todo_list",
+    "j_sixth_sense",
 ]
-KEY_DIMS = {**{key: key for key in EFFECT_KEYS}, **{key: "inert" for key in INERT_KEYS}}
+# JokerRegistry.uncommon: Baseball Card multiplies by 1.5 for each of these in the other slots
+UNCOMMON = {
+    "j_stencil",
+    "j_mime",
+    "j_ceremonial",
+    "j_marble",
+    "j_loyalty_card",
+    "j_dusk",
+    "j_fibonacci",
+    "j_steel_joker",
+    "j_hack",
+    "j_blackboard",
+    "j_sixth_sense",
+    "j_burglar",
+    "j_constellation",
+    "j_hiker",
+    "j_card_sharp",
+    "j_madness",
+    "j_seance",
+    "j_space",
+    "j_hologram",
+    "j_cloud_9",
+    "j_rocket",
+    "j_midas_mask",
+    "j_luchador",
+    "j_gift",
+    "j_turtle_bean",
+    "j_erosion",
+    "j_to_the_moon",
+    "j_stone",
+    "j_lucky_cat",
+    "j_bull",
+    "j_diet_cola",
+    "j_trading",
+    "j_flash",
+    "j_trousers",
+    "j_ramen",
+    "j_selzer",
+    "j_castle",
+    "j_mr_bones",
+    "j_acrobat",
+    "j_sock_and_buskin",
+    "j_troubadour",
+    "j_certificate",
+    "j_throwback",
+    "j_rough_gem",
+    "j_bloodstone",
+    "j_arrowhead",
+    "j_onyx_agate",
+    "j_glass",
+    "j_ring_master",
+    "j_flower_pot",
+    "j_merry_andy",
+    "j_oops",
+    "j_idol",
+    "j_seeing_double",
+    "j_matador",
+    "j_satellite",
+    "j_cartomancer",
+    "j_astronomer",
+    "j_bootstraps",
+}
+
+
+def key_class(key: str) -> str:
+    if key in INERT_KEYS:
+        return "inertU" if key in UNCOMMON else "inert"
+    if key in [*FACTOR_KEYS, OBELISK_KEY]:
+        return "xfU" if key in UNCOMMON else "xf"
+    return key
+
+
+KEY_DIMS = {
+    key: key_class(key)
+    for key in [
+        *COPIED_KEYS,
+        *INERT_KEYS,
+        *FACTOR_KEYS,
+        OBELISK_KEY,
+        *COPY_KEYS,
+        MIDAS_KEY,
+    ]
+}
+KEY_CLASSES = sorted(set(KEY_DIMS.values()))
+UNCOMMON_CLASSES = sorted({name for key, name in KEY_DIMS.items() if key in UNCOMMON})
+UNCOMMON_KEYS = sorted(key for key in KEY_DIMS if key in UNCOMMON)
 
 STAGES = [
     ("in", "input features, set by the encoder"),
@@ -224,6 +362,18 @@ STAGES = [
         "fetch",
         "attention heads P1-P5 fetch the features of the candidate's k-th card, H0-H7 those of hand slot s, T averages non-black cards",
     ),
+    (
+        "copies",
+        "which slots hold a joker that is not a copy, which are Uncommon, and, by rounds, which slot each slot acts as after its Blueprint and Brainstorm copies",
+    ),
+    (
+        "effective",
+        "per slot: the key, value, factor, text bits of the joker it acts as; whether a Midas Mask is held; how many slots act as Baseball Card",
+    ),
+    (
+        "midas",
+        "per scoring card: the chips, enhancements and suit matches it has once a Midas Mask has turned face cards Gold",
+    ),
     ("pair", "rank equalities, rank gaps, suit counts"),
     (
         "shape",
@@ -233,7 +383,7 @@ STAGES = [
     ("score", "which played cards score, level chips and mult"),
     (
         "situation",
-        "no hands or discards left, a round play of the hand type, a joker value of 16 or more",
+        "no hands or discards left, a round play of the hand type, a joker value of 16 or more, exactly four cards played, another hand type played as often as this one (Obelisk)",
     ),
     ("contained", "the hand types the played cards contain, as Hands.containedIn"),
     (
@@ -242,7 +392,11 @@ STAGES = [
     ),
     (
         "jokers",
-        "per joker slot: chips added, mult added, the factor it multiplies by, with its Polychrome",
+        "per joker slot: chips added, mult added, whether it multiplies by 2, 3 or 4",
+    ),
+    (
+        "factors",
+        "per joker slot: 4 times its factor and its bits, the Baseball Card and Polychrome factors 1.5 it meets",
     ),
     ("order", "the first scoring card and the first scoring face card"),
     (
@@ -271,7 +425,7 @@ STAGES = [
     ),
     (
         "jokerfold",
-        "mult folded slot by slot: Holo and its own add, then its factor, then Polychrome",
+        "mult folded slot by slot: Holo and its own add, then its factor by shift-and-add, then its Baseball Card factors and Polychrome",
     ),
     ("product", "chips times mult, one gated copy of mult per chips digit step"),
     ("floor", "floor of the product by base-256 digit extraction, then the total"),
@@ -429,17 +583,8 @@ def declare_inputs(b: Builder) -> None:
         b.dim(f"run_{t}", "in", f"plays of {t} this run, on candidates", 0)
         b.dim(f"rnd_{t}", "in", f"plays of {t} this round, on candidates", 0)
     for j in range(1, JOKERS + 1):
-        for name in [*EFFECT_KEYS, "inert"]:
-            b.dim(
-                f"j{j}_k_{name}",
-                "in",
-                (
-                    f"1 on candidates when joker slot {j} holds {name}"
-                    if name != "inert"
-                    else f"1 on candidates when joker slot {j} holds a joker with no score effect"
-                ),
-                0,
-            )
+        for name in KEY_CLASSES:
+            b.dim(f"j{j}_k_{name}", "in", key_meaning(j, name), 0)
         for e in EDITIONS:
             b.dim(
                 f"j{j}_e_{e}",
@@ -461,6 +606,300 @@ def declare_inputs(b: Builder) -> None:
             f"rank id the Idol in slot {j} names, 0 for none; the suit bits are all 0 when its text does not parse",
             0,
         )
+        b.dim(
+            f"j{j}_fx",
+            "in",
+            f"factor minus 1 of the joker in slot {j} when it multiplies mult by an input factor, else 0",
+            0,
+        )
+        b.dim(
+            f"j{j}_fo",
+            "in",
+            f"factor minus 1 of the Obelisk in slot {j}, else 0",
+            0,
+        )
+        b.dim(
+            f"j{j}_loy",
+            "in",
+            f"1 on candidates when the Loyalty Card text in slot {j} says it is active",
+            0,
+        )
+
+
+def key_meaning(j: int, name: str) -> str:
+    holder = f"1 on candidates when joker slot {j} holds"
+    return {
+        "inert": f"{holder} a joker with no score effect",
+        "inertU": f"{holder} an Uncommon joker with no score effect",
+        "xf": f"{holder} a joker that multiplies by an input factor",
+        "xfU": f"{holder} an Uncommon joker that multiplies by an input factor",
+    }.get(name, f"{holder} {name}")
+
+
+def raw(j: int, name: str) -> str:
+    return f"j{j}_k_{name}"
+
+
+def holds(j: int, key: str) -> str:
+    return f"e{j}_k_{key}"
+
+
+def and_bit(b: Builder, left: str, right: str) -> int:
+    return b.unit({left: 1.0, right: 1.0}, -1.0)
+
+
+# the dim that is 1 when slot j resolves to slot s within n hops of copying, None when it never is
+def resolved(b: Builder, n: int, j: int, s: int) -> str | None:
+    name = f"real_{j}" if n == 0 else f"rs{n}_{j}_{s}"
+    return name if (s == j or n > 0) and name in b.index else None
+
+
+def stage_copies(b: Builder) -> None:
+    solid = [name for name in KEY_CLASSES if name not in COPY_KEYS]
+    for j in range(1, JOKERS + 1):
+        b.define(
+            f"real_{j}",
+            "copies",
+            f"1 when slot {j} holds a joker that is not a copy",
+            [(b.unit({raw(j, name): 1.0 for name in solid}), 1.0)],
+        )
+        b.define(
+            f"unc_{j}",
+            "copies",
+            f"1 when slot {j} holds an Uncommon joker, as Baseball Card counts them",
+            [(b.unit({raw(j, name): 1.0 for name in UNCOMMON_CLASSES}), 1.0)],
+        )
+    # Blueprint copies the slot to its right, Brainstorm the first slot; a chain of copies is at most JOKERS - 1 long
+    for n in range(1, JOKERS):
+        for j in range(1, JOKERS + 1):
+            for s in range(1, JOKERS + 1):
+                terms = []
+                if s == j:
+                    terms.append((b.unit({f"real_{j}": 1.0}), 1.0))
+                if j < JOKERS and resolved(b, n - 1, j + 1, s):
+                    bit = and_bit(
+                        b, raw(j, "j_blueprint"), resolved(b, n - 1, j + 1, s)
+                    )
+                    terms.append((bit, 1.0))
+                if j > 1 and resolved(b, n - 1, 1, s):
+                    bit = and_bit(b, raw(j, "j_brainstorm"), resolved(b, n - 1, 1, s))
+                    terms.append((bit, 1.0))
+                if terms:
+                    b.define(
+                        f"rs{n}_{j}_{s}",
+                        "copies",
+                        f"1 when slot {j} acts as the joker in slot {s} after at most {n} copies",
+                        terms,
+                    )
+
+
+def stage_effective(b: Builder) -> None:
+    last = JOKERS - 1
+    for j in range(1, JOKERS + 1):
+        sources = [
+            (s, resolved(b, last, j, s))
+            for s in range(1, JOKERS + 1)
+            if resolved(b, last, j, s)
+        ]
+        for key in COPIED_KEYS:
+            terms = [
+                (and_bit(b, res, raw(s, KEY_DIMS[key])), 1.0) for s, res in sources
+            ]
+            b.define(
+                holds(j, key),
+                "effective",
+                f"1 when slot {j} acts as {key}: it holds it, or copies the slot that does",
+                terms,
+            )
+        features = [
+            ("v", "value", VALUE_GATE),
+            ("fx", "factor minus 1", FACTOR_GATE),
+            ("fo", "Obelisk factor minus 1", FACTOR_GATE),
+            ("tid", "Idol rank id", TID_GATE),
+            ("loy", "Loyalty Card active bit", 1.0),
+            *[
+                (f"ts_{suit}", f"Ancient or Idol suit bit {suit}", 1.0)
+                for suit in SUITS
+            ],
+        ]
+        for name, meaning, gate in features:
+            terms = [
+                (b.unit({res: gate, f"j{s}_{name}": 1.0}, -gate), 1.0)
+                for s, res in sources
+            ]
+            b.define(
+                f"e{name}_{j}",
+                "effective",
+                f"{meaning} of the joker slot {j} acts as",
+                terms,
+            )
+    b.define(
+        "mid",
+        "effective",
+        "1 when a Midas Mask is held",
+        at_least(b, total_of([raw(j, MIDAS_KEY) for j in range(1, JOKERS + 1)]), 1.0),
+    )
+    b.define(
+        "nb",
+        "effective",
+        "number of slots that act as Baseball Card",
+        [(b.unit({holds(j, BASEBALL_KEY): 1.0}), 1.0) for j in range(1, JOKERS + 1)],
+    )
+
+
+def stage_midas(b: Builder) -> None:
+    for k in range(1, POSITIONS + 1):
+        mg = f"mg_{k}"
+        b.define(
+            mg,
+            "midas",
+            f"1 when card {k} is a face card and a Midas Mask turns it Gold",
+            [(b.unit({f"P{k}_fc": 1.0, "mid": 1.0}, -1.0), 1.0)],
+        )
+        b.define(
+            f"Q{k}_cv",
+            "midas",
+            f"chips of one scoring pass of card {k} once a Midas Mask has acted",
+            [
+                (b.unit({f"P{k}_cv": 1.0}), 1.0),
+                (b.unit({f"P{k}_bo": 1.0, mg: 1.0}, -1.0), -30.0),
+            ],
+        )
+        for name, meaning in (
+            ("a", "the Mult enhancement"),
+            ("gl", "the Glass enhancement"),
+            ("wd", "the Wild enhancement"),
+        ):
+            b.define(
+                f"Q{k}_{name}",
+                "midas",
+                f"1 when card {k} has {meaning} once a Midas Mask has acted",
+                [(b.unit({f"P{k}_{name}": 1.0, mg: -1.0}), 1.0)],
+            )
+        for s in SUITS:
+            own = {f"P{k}_wd": 1.0, mg: 1.0, f"P{k}_su_{s}": 1.0}
+            b.define(
+                f"Q{k}_own_{s}",
+                "midas",
+                f"1 for a plain card of suit {s}, a Gold face card counting as plain",
+                [
+                    (b.unit({f"P{k}_own_{s}": 1.0}), 1.0),
+                    (b.unit(own, -2.0), 1.0),
+                ],
+            )
+            match = {f"P{k}_wd": 1.0, f"P{k}_su_{s}": -1.0, mg: -1.0}
+            b.define(
+                f"Q{k}_sm_{s}",
+                "midas",
+                f"1 when card {k} matches suit {s} once a Midas Mask has acted",
+                [(b.unit({f"P{k}_su_{s}": 1.0}), 1.0), (b.unit(match), 1.0)],
+            )
+
+
+def stage_factors(b: Builder) -> None:
+    for j in range(1, JOKERS + 1):
+        b.define(
+            f"fa_{j}",
+            "factors",
+            f"input factor minus 1 that the joker in slot {j} applies to this hand",
+            [
+                (b.unit({f"efx_{j}": 1.0}), 1.0),
+                (b.unit({f"efo_{j}": 1.0, "ob": FACTOR_GATE}, -FACTOR_GATE), 1.0),
+            ],
+        )
+        terms = [(b.unit({"one": 1.0}, 3.0), 1.0), (b.unit({f"fa_{j}": 1.0}), 4.0)]
+        terms += [(b.unit({f"x{c}_{j}": 1.0}), 4.0 * (c - 1)) for c in (2, 3, 4)]
+        b.define(
+            f"k_{j}",
+            "factors",
+            f"4 times the factor of the joker in slot {j}, as a whole number",
+            terms,
+        )
+        for a in range(5, FACTOR_K + 1):
+            b.define(
+                f"kt_{j}_{a}",
+                "factors",
+                f"1 when 4 times the factor of slot {j} is at least {a}",
+                at_least(b, {f"k_{j}": 1.0}, float(a)),
+            )
+
+        def reach(a: int) -> list[tuple[int, float]]:
+            if a > FACTOR_K:
+                return []
+            if a < 5:
+                return [(b.unit({"one": 1.0}), 1.0)]
+            return [(b.unit({f"kt_{j}_{a}": 1.0}), 1.0)]
+
+        for i in range(K_BITS):
+            terms = []
+            for t in range(1, FACTOR_K // 2**i + 1, 2):
+                terms += reach(t * 2**i) + weighted(reach((t + 1) * 2**i), -1.0)
+            b.define(
+                f"kb_{j}_{i}",
+                "factors",
+                f"bit {i} of 4 times the factor of slot {j}",
+                terms,
+            )
+        b.define(
+            f"bb_{j}",
+            "factors",
+            f"Baseball Card factors 1.5 that slot {j} meets: one per Baseball Card when it is Uncommon",
+            [
+                (
+                    b.unit({"nb": 1.0, f"unc_{j}": float(JOKERS)}, -float(JOKERS)),
+                    1.0,
+                )
+            ],
+        )
+        one_hot_of = {f"bb_{j}": 1.0, f"j{j}_e_Polychrome": 1.0}
+        for c in range(POLY_COPIES + 1):
+            b.define(
+                f"cq_{j}_{c}",
+                "factors",
+                f"1 when slot {j} multiplies by 1.5 {c} times: Baseball Cards and Polychrome",
+                equals(b, one_hot_of, float(c)),
+            )
+
+
+def stage_jokerfold(b: Builder) -> str:
+    previous = "multCards"
+    for j in range(1, JOKERS + 1):
+        terms = [
+            (
+                b.unit(
+                    {
+                        previous: 2.0**i,
+                        f"ma_{j}": 2.0**i,
+                        f"kb_{j}_{i}": SHIFT_GATE,
+                    },
+                    -SHIFT_GATE,
+                ),
+                0.25,
+            )
+            for i in range(K_BITS)
+        ]
+        shifted = f"js_{j}"
+        b.define(
+            shifted,
+            "jokerfold",
+            f"mult after the Holo, the own add and the factor of slot {j}: shift-and-add over the bits of 4 times the factor",
+            terms,
+        )
+        terms = [
+            (
+                b.unit({shifted: 1.5**c, f"cq_{j}_{c}": COPY_GATE}, -COPY_GATE),
+                1.0,
+            )
+            for c in range(POLY_COPIES + 1)
+        ]
+        previous = f"jm_{j}"
+        b.define(
+            previous,
+            "jokerfold",
+            f"mult after slot {j}: its Baseball Card factors and Polychrome close the slot",
+            terms,
+        )
+    return previous
 
 
 def stage_card(b: Builder) -> None:
@@ -516,6 +955,13 @@ def stage_card(b: Builder) -> None:
             [(b.unit({f"suit_{s}": 1.0, "enh_Wild": -1.0, "enh_Stone": -1.0}), 1.0)],
         )
     for s in SUITS:
+        b.define(
+            f"su_{s}",
+            "card",
+            f"1 on a card of suit {s} that is not a Stone, whether or not it is Wild",
+            [(b.unit({f"suit_{s}": 1.0, "enh_Stone": -1.0}), 1.0)],
+        )
+    for s in SUITS:
         own = b.unit({f"suit_{s}": 1.0, "enh_Stone": -1.0})
         wild = b.unit({"enh_Wild": 1.0, f"suit_{s}": -1.0})
         b.define(
@@ -559,6 +1005,7 @@ def fetched(k: int) -> dict[str, tuple[Expr, str]]:
         "hk": ({"hk": 1.0}, "1 for a 2, 3, 4 or 5"),
         "nl": ({"isNull": 1.0}, "1 for a null token: the card slot is empty"),
         "wd": ({"enh_Wild": 1.0}, "1 for the Wild enhancement"),
+        "bo": ({"enh_Bonus": 1.0}, "1 for the Bonus enhancement"),
         "nb": (
             {"isCard": 1.0, "bk": -1.0},
             "1 for a card that does not count as black",
@@ -571,6 +1018,11 @@ def fetched(k: int) -> dict[str, tuple[Expr, str]]:
         )
     for s in SUITS:
         values[f"sm_{s}"] = ({f"sm_{s}": 1.0}, f"1 when the card matches suit {s}")
+    for s in SUITS:
+        values[f"su_{s}"] = (
+            {f"su_{s}": 1.0},
+            f"1 for a card of suit {s} that is not a Stone",
+        )
     return values
 
 
@@ -610,12 +1062,12 @@ def position_heads(b: Builder) -> list[dict]:
     return heads
 
 
-def steel_head(b: Builder) -> dict:
+def nonblack_head(b: Builder) -> dict:
     expr = {"isCard": 1.0, "bk": -1.0}
     meaning = "fresh: cards that do not count as black in the whole hand, divided by 8"
     b.fresh("T_nb", "fetch", meaning, max(b.ready[d] for d in expr))
     wk = {(0, f"slot_{s}"): 1.0 for s in range(CARD_SLOTS)}
-    return head(b, "steel", {(0, "isCand"): BETA}, wk, [("T_nb", expr)])
+    return head(b, "nonblack", {(0, "isCand"): BETA}, wk, [("T_nb", expr)])
 
 
 def held_heads(b: Builder) -> list[dict]:
@@ -828,13 +1280,41 @@ def stage_situation(b: Builder) -> None:
             f"d16_{j}",
             "situation",
             f"1 when the value of the joker in slot {j} is 16 or more",
-            at_least(b, {f"j{j}_v": 1.0}, 16.0),
+            at_least(b, {f"ev_{j}": 1.0}, 16.0),
         )
     b.define(
         "cs",
         "situation",
         "1 when the hand type was already played this round",
         [(b.unit({f"rs_{t}": 1.0, f"t_{t}": 1.0}, -1.0), 1.0) for t in TYPES],
+    )
+    b.define(
+        "sz4",
+        "situation",
+        "1 when exactly four cards are played",
+        [(b.unit({"P5_nl": 1.0, "P4_nl": -1.0}), 1.0)],
+    )
+    b.define(
+        "rcur",
+        "situation",
+        "plays of the hand type this run, before this hand",
+        [
+            (b.unit({f"run_{t}": 1.0, f"t_{t}": RUN_GATE}, -RUN_GATE), 1.0)
+            for t in TYPES
+        ],
+    )
+    for t in TYPES:
+        b.define(
+            f"ob_{t}",
+            "situation",
+            f"1 when {t} was played this run at least as often as the hand type, counting this hand",
+            at_least(b, {f"run_{t}": 1.0, "rcur": -1.0}, 1.0),
+        )
+    b.define(
+        "ob",
+        "situation",
+        "1 when another hand type was played at least as often as this one, counting this hand (Obelisk)",
+        at_least(b, total_of([f"ob_{t}" for t in TYPES]), 1.0),
     )
 
 
@@ -885,13 +1365,13 @@ def stage_suits(b: Builder) -> None:
                 f"pk_{k}_{s}",
                 "suits",
                 f"1 when card {k} scores and is a plain card of suit {s}",
-                [(b.unit({f"sc_{k}": 1.0, f"P{k}_own_{s}": 1.0}, -1.0), 1.0)],
+                [(b.unit({f"sc_{k}": 1.0, f"Q{k}_own_{s}": 1.0}, -1.0), 1.0)],
             )
         b.define(
             f"wd_{k}",
             "suits",
             f"1 when card {k} scores and is Wild",
-            [(b.unit({f"sc_{k}": 1.0, f"P{k}_wd": 1.0}, -1.0), 1.0)],
+            [(b.unit({f"sc_{k}": 1.0, f"Q{k}_wd": 1.0}, -1.0), 1.0)],
         )
     for s in SUITS:
         b.define(
@@ -940,22 +1420,23 @@ def stage_suits(b: Builder) -> None:
 
 
 def stage_effects(b: Builder) -> None:
-    def holds(j: int, key: str) -> str:
-        return f"j{j}_k_{key}"
-
     def fires(j: int, key: str, cond: str | None) -> int:
         if cond is None:
             return b.unit({holds(j, key): 1.0})
         return b.unit({holds(j, key): 1.0, cond.format(j=j): 1.0}, -1.0)
 
     for j in range(1, JOKERS + 1):
+        value = f"ev_{j}"
         chips = [(b.unit({f"j{j}_e_Foil": 1.0}), 50.0)]
         chips += [
             (fires(j, key, cond), float(amount))
             for key, (cond, amount) in ADD_CHIPS.items()
         ]
         for key in VALUE_CHIPS:
-            gate = {f"j{j}_v": 1.0, holds(j, key): VALUE_GATE}
+            gate = {value: 1.0, holds(j, key): VALUE_GATE}
+            chips.append((b.unit(gate, -VALUE_GATE), 1.0))
+        for key, (cond, amount) in VALUE_PLUS_CHIPS.items():
+            gate = {value: 1.0, cond: float(amount), holds(j, key): VALUE_GATE}
             chips.append((b.unit(gate, -VALUE_GATE), 1.0))
         banner = {"dl": 30.0, holds(j, "j_banner"): BANNER_GATE}
         chips.append((b.unit(banner, -BANNER_GATE), 1.0))
@@ -972,8 +1453,15 @@ def stage_effects(b: Builder) -> None:
             for key, (cond, amount) in ADD_MULT.items()
         ]
         for key in VALUE_MULT:
-            gate = {f"j{j}_v": 1.0, holds(j, key): VALUE_GATE}
+            gate = {value: 1.0, holds(j, key): VALUE_GATE}
             mult.append((b.unit(gate, -VALUE_GATE), 1.0))
+        for key, (cond, amount) in VALUE_PLUS_MULT.items():
+            gate = {value: 1.0, cond: float(amount), holds(j, key): VALUE_GATE}
+            mult.append((b.unit(gate, -VALUE_GATE), 1.0))
+        green = {value: 1.0, holds(j, GREEN_KEY): VALUE_GATE}
+        mult.append((b.unit(green, 1.0 - VALUE_GATE), 1.0))
+        bus = {value: 1.0, holds(j, BUS_KEY): VALUE_GATE, "nf": VALUE_GATE}
+        mult.append((b.unit(bus, 1.0 - 2 * VALUE_GATE), 1.0))
         mystic = {holds(j, "j_mystic_summit"): 15.0, "dl": -15.0}
         mult.append((b.unit(mystic), 1.0))
         for t in TYPES:
@@ -998,27 +1486,6 @@ def stage_effects(b: Builder) -> None:
                 f"1 when the joker in slot {j} multiplies mult by {factor}",
                 [(fires(j, key, TIMES_MULT[key][0]), 1.0) for key in keys],
             )
-        poly = f"j{j}_e_Polychrome"
-        others = {f"x{f}_{j}": -1.0 for f in (2, 3, 4)}
-        bits = {
-            (1, 0): (merged(others, {poly: -1.0}), 1.0),
-            (1, 1): (merged(others, {poly: 1.0}), 0.0),
-        }
-        for factor in (2, 3, 4):
-            bits[factor, 0] = ({f"x{factor}_{j}": 1.0, poly: -1.0}, 0.0)
-            bits[factor, 1] = ({f"x{factor}_{j}": 1.0, poly: 1.0}, -1.0)
-        for (factor, with_poly), (expr, bias) in bits.items():
-            b.define(
-                f"fb_{j}_{factor}_{with_poly}",
-                "jokers",
-                f"1 when the joker in slot {j} multiplies by {factor}"
-                f" and {'has' if with_poly else 'lacks'} Polychrome",
-                [(b.unit(expr, bias), 1.0)],
-            )
-
-
-def holds(j: int, key: str) -> str:
-    return f"j{j}_k_{key}"
 
 
 def stage_order(b: Builder) -> None:
@@ -1029,6 +1496,20 @@ def stage_order(b: Builder) -> None:
             f"1 when card {k} scores and is a face card",
             [(b.unit({f"sc_{k}": 1.0, f"P{k}_fc": 1.0}, -1.0), 1.0)],
         )
+    b.define(
+        "nf",
+        "order",
+        "1 when no scoring card is a face card (Ride the Bus)",
+        [
+            (
+                b.unit(
+                    total_of([f"sf_{k}" for k in range(1, POSITIONS + 1)], -1.0),
+                    1.0,
+                ),
+                1.0,
+            )
+        ],
+    )
     for k in range(1, POSITIONS + 1):
         before = range(1, k)
         faces = total_of([f"sf_{m}" for m in before], -1.0)
@@ -1047,11 +1528,16 @@ def stage_order(b: Builder) -> None:
         )
 
 
+# a suit match is read after a Midas Mask has acted
+def card_dim(k: int, feat: str) -> str:
+    return f"Q{k}_{feat}" if feat.startswith("sm_") else f"P{k}_{feat}"
+
+
 def stage_scored(b: Builder) -> None:
     for j in range(1, JOKERS + 1):
         for k in range(1, POSITIONS + 1):
             suit = [
-                (b.unit({f"j{j}_ts_{s}": 1.0, f"P{k}_sm_{s}": 1.0}, -1.0), 1.0)
+                (b.unit({f"ets_{s}_{j}": 1.0, f"Q{k}_sm_{s}": 1.0}, -1.0), 1.0)
                 for s in SUITS
             ]
             b.define(
@@ -1064,12 +1550,15 @@ def stage_scored(b: Builder) -> None:
                 f"rm_{j}_{k}",
                 "scored",
                 f"1 when card {k} has the rank id joker {j} names",
-                equals(b, {f"P{k}_rr": 1.0, f"j{j}_tid": -1.0}, 0.0),
+                equals(b, {f"P{k}_rr": 1.0, f"etid_{j}": -1.0}, 0.0),
             )
     for j in range(1, JOKERS + 1):
         for k in range(1, POSITIONS + 1):
             add = [
-                (b.unit({holds(j, key): 1.0, f"P{k}_{feat}": 1.0}, -1.0), float(amount))
+                (
+                    b.unit({holds(j, key): 1.0, card_dim(k, feat): 1.0}, -1.0),
+                    float(amount),
+                )
                 for key, (feat, amount) in CARD_ADD_MULT.items()
             ]
             b.define(
@@ -1079,7 +1568,10 @@ def stage_scored(b: Builder) -> None:
                 add,
             )
             chips = [
-                (b.unit({holds(j, key): 1.0, f"P{k}_{feat}": 1.0}, -1.0), float(amount))
+                (
+                    b.unit({holds(j, key): 1.0, card_dim(k, feat): 1.0}, -1.0),
+                    float(amount),
+                )
                 for key, (feat, amount) in CARD_ADD_CHIPS.items()
             ]
             b.define(
@@ -1194,7 +1686,7 @@ def stage_passes(b: Builder) -> None:
             terms,
         )
         one_hot(b, f"nq_{k}", f"n_{k}", PASSES, "passes", f"the passes of card {k}")
-        chips = [(b.unit({f"P{k}_cv": 1.0}), 1.0)]
+        chips = [(b.unit({f"Q{k}_cv": 1.0}), 1.0)]
         chips += [(b.unit({f"pc_{j}_{k}": 1.0}), 1.0) for j in range(1, JOKERS + 1)]
         b.define(
             f"pch_{k}",
@@ -1203,9 +1695,9 @@ def stage_passes(b: Builder) -> None:
             chips,
         )
         own = [
-            (b.unit({f"P{k}_a": 4.0}), 1.0),
+            (b.unit({f"Q{k}_a": 4.0}), 1.0),
             (b.unit({f"P{k}_ho": 10.0}), 1.0),
-            (b.unit({f"P{k}_a": 1.0, f"P{k}_po": 1.0}, -1.0), 2.0),
+            (b.unit({f"Q{k}_a": 1.0, f"P{k}_po": 1.0}, -1.0), 2.0),
         ]
         b.define(
             f"cc_{k}_0", "passes", f"mult card {k} adds in one pass by itself", own
@@ -1214,7 +1706,7 @@ def stage_passes(b: Builder) -> None:
             f"ce2_{k}_0",
             "passes",
             f"doublings in one pass of card {k} by itself",
-            [(b.unit({f"P{k}_gl": 1.0}), 1.0)],
+            [(b.unit({f"Q{k}_gl": 1.0}), 1.0)],
         )
         b.define(
             f"ce15_{k}_0",
@@ -1513,29 +2005,6 @@ def stage_digits(b: Builder) -> None:
             rest = rest_next
 
 
-def stage_jokerfold(b: Builder) -> str:
-    previous = "multCards"
-    for j in range(1, JOKERS + 1):
-        terms = []
-        for factor in (1, 2, 3, 4):
-            for with_poly in (0, 1):
-                scale = factor * (1.5 if with_poly else 1.0)
-                expr = {
-                    previous: scale,
-                    f"ma_{j}": scale,
-                    f"fb_{j}_{factor}_{with_poly}": JOKER_GATE,
-                }
-                terms.append((b.unit(expr, -JOKER_GATE), 1.0))
-        previous = f"jm_{j}"
-        b.define(
-            previous,
-            "jokerfold",
-            f"mult after the joker in slot {j}: Holo, its own add, its factor, Polychrome",
-            terms,
-        )
-    return previous
-
-
 def stage_product(b: Builder, mult: str) -> None:
     radix = 2**CHIP_RADIX_BITS
     terms = []
@@ -1641,7 +2110,16 @@ def check_bounds(b: Builder) -> list[tuple[str, int, int]]:
             2 * int(HELD_GATE),
             HELD_HALVES + 1,
         ),
-        ("gated pre-activation in a joker fold stage", 2 * int(JOKER_GATE), FRAC + 1),
+        (
+            "gated pre-activation in the shift-and-add stage of a joker factor",
+            2 * int(SHIFT_GATE),
+            FRAC,
+        ),
+        (
+            "gated pre-activation in the Baseball Card and Polychrome stage",
+            2 * int(COPY_GATE),
+            FRAC + POLY_COPIES,
+        ),
         ("chips", CHIPS_CAP, 0),
         ("gated pre-activation of one pass of chips", 2 * int(CHIPS_GATE), 0),
         (
@@ -1691,7 +2169,8 @@ def readme(
         "",
         "One transformer block looped `loops` times. Every weight is set by the builder from a stated",
         "meaning; nothing is trained. It picks the play `Search.plays` would pick for a hand of 1-8 cards",
-        "with any enhancement, edition and seal and up to 5 jokers (main-phase and per-card), no boss and",
+        "with any enhancement, edition and seal and up to 5 jokers (main-phase, per-card, counters, input",
+        "factors, Midas Mask, Blueprint, Brainstorm and Baseball Card), no boss and",
         "no Plasma Deck balance, and reports its total and hand type.",
         "Every dim is a pure function of the dims and fetches of the loop before, so after `loops` loops",
         "all of them hold their final value. Attention weights are exactly 0, 1, or 1/8, and every",
@@ -1700,9 +2179,12 @@ def readme(
         f"- residual width d = {data['d']}, hidden units = {data['hidden']}, loops = {data['loops']}",
         f"- nonzero weights (matrices and biases) = {nonzeros}",
         f"- levels accepted: mult whole 1..{MMAX}, chips whole 0..{CMAX}",
-        f"- hands accepted: the encoder bounds from the cards, jokers and levels alone the mult (level mult plus every add, times every doubling and factor 1.5, then the main-phase jokers), the chips and their product; at most {MULT_CAP}, {CHIPS_CAP} and {PRODUCT_CAP}, and at most {WMAX} factors 1.5 in all (Polychrome, Steel, Baron, Ancient Joker), each counted once per pass",
+        f"- hands accepted: the encoder bounds from the cards, jokers and levels alone the mult (level mult plus every add, times every doubling and factor 1.5, then the main-phase jokers), the chips and their product; at most {MULT_CAP}, {CHIPS_CAP} and {PRODUCT_CAP}, and at most {WMAX} factors 1.5 in all (Polychrome, Steel, Baron, Ancient Joker, Baseball Card) plus the fraction bits of the input factors, each counted once per pass",
         f"  a card has at most {PASSES} passes (itself, a Red Seal, retriggers), {DOUBLES} doublings and {HALVES} factors 1.5 per pass; a held card at most {HELD_PASSES} passes and {HELD_HALVES} factors 1.5 per pass; at most five cards are played, and Hanging Chad and Photograph act on one card",
-        f"- jokers accepted: at most {JOKERS}, none debuffed, every key in the lists below, value a whole number 0..{VALUE_MAX}; hands left and discards left whole 0..{LEFT_MAX}; plays of a hand type this run and this round whole 0..{PLAYS_MAX}",
+        f"- jokers accepted: at most {JOKERS}, none debuffed, every key in the lists below, value a whole number 0..{VALUE_MAX} (for Ice Cream and Popcorn the number in their text); hands left and discards left whole 0..{LEFT_MAX}; plays of a hand type this run and this round whole 0..{PLAYS_MAX}",
+        f"- input factors: the encoder derives a factor from the joker as the reference does (the value; Obelisk value + 0.2; Ramen from its text), and it counts as no effect when it is 1 or less. A factor is accepted only when 4 times it is a whole number and it is at most {FMAX}, so 1.25, 1.5, 2.5 and 8 are in scope and 1.1, 1.2, 8.25 and 9 are not (the hand is declined). Ramen, whose factor is rebuilt by subtracting 0.01 from 2 once per discarded card, is in scope only for the text X2 (no discards) and for a factor of 1 or less; every other Ramen factor is not a multiple of 1/4 and declines the hand. The net multiplies by it with shift-and-add over the {K_BITS} bits of 4 times the factor, then divides by 4",
+        "- copies: Blueprint copies the slot to its right, Brainstorm the first slot, resolved as `resolve` in Scoring.fs (a chain ends at a joker that is not a copy; a loop, the last slot or a missing target gives nothing); a copy takes the key, value and text of its target and keeps its own edition; Baseball Card multiplies each Uncommon slot by 1.5 per slot that acts as it, after that slot's own effect and before its Polychrome",
+        "- Midas Mask turns every scoring face card Gold before scoring: the card loses the effect of its enhancement and counts as a plain card of its suit; the hand type is read before",
         "- computed dims on non-candidate tokens hold values nobody reads",
         "",
         "## Joker keys in scope",
@@ -1712,6 +2194,12 @@ def readme(
         "",
         "With a score effect per card (Ancient Joker and Idol read their target from the text): "
         + ", ".join(f"`{key}`" for key in CARD_KEYS),
+        "",
+        "Multiplying mult by an input factor: "
+        + ", ".join(f"`{key}`" for key in [*FACTOR_KEYS, OBELISK_KEY]),
+        "",
+        "Copies and the rest: "
+        + ", ".join(f"`{key}`" for key in [*COPY_KEYS, BASEBALL_KEY, MIDAS_KEY]),
         "",
         "No score effect, they only occupy a slot: "
         + ", ".join(f"`{key}`" for key in INERT_KEYS),
@@ -1751,7 +2239,10 @@ def build() -> None:
     b = Builder()
     declare_inputs(b)
     stage_card(b)
-    heads = position_heads(b) + [steel_head(b)] + held_heads(b)
+    stage_copies(b)
+    stage_effective(b)
+    heads = position_heads(b) + [nonblack_head(b)] + held_heads(b)
+    stage_midas(b)
     stage_pairs(b)
     stage_shape(b)
     stage_type(b)
@@ -1759,8 +2250,9 @@ def build() -> None:
     stage_situation(b)
     stage_contained(b)
     stage_suits(b)
-    stage_effects(b)
     stage_order(b)
+    stage_effects(b)
+    stage_factors(b)
     stage_scored(b)
     stage_passes(b)
     stage_held(b, stage_playedfold(b))
@@ -1790,12 +2282,15 @@ def build() -> None:
             "heldHalves": HELD_HALVES,
             "heldPasses": HELD_PASSES,
             "jokers": JOKERS,
+            "factor": FMAX,
             "value": VALUE_MAX,
             "left": LEFT_MAX,
             "plays": PLAYS_MAX,
         },
         "keys": KEY_DIMS,
         "main": MAIN_KEYS,
+        "factors": FACTOR_KEYS,
+        "uncommon": UNCOMMON_KEYS,
         "addsMult": list(CARD_ADD_MULT),
         "addsChips": list(CARD_ADD_CHIPS),
         "dims": b.index,
