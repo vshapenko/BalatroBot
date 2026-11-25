@@ -108,6 +108,7 @@ let context (seq: int) (g: Api.GameState) : string * string =
     o.ToJsonString(), text
 
 let runOne
+    (net: PlayNet.Net option)
     (client: Api.Client)
     (deck: Api.Deck)
     (stake: Api.Stake)
@@ -149,7 +150,7 @@ let runOne
             finish (Aborted(sprintf "%d decisions made" maxDecisions)) g plays discards exact purchases sales rerolls packs
         else
             try
-                let action, decision = Policy.decide seq g
+                let action, decision = Policy.decideWith net seq g
                 emit (Decision.toJson decision) (Decision.toText decision)
 
                 let next apiCall =

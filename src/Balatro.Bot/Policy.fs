@@ -59,7 +59,7 @@ let private currentBlind (g: Api.GameState) =
     [ g.Blinds.Value.Small; g.Blinds.Value.Big; g.Blinds.Value.Boss ]
     |> List.find (fun b -> b.Status = Api.BlindStatus.Current)
 
-let private chooseAction seq (g: Api.GameState) =
+let private chooseAction (net: PlayNet.Net option) seq (g: Api.GameState) =
     let levels = Mapping.levels g
 
     let hand =
@@ -111,13 +111,50 @@ let private chooseAction seq (g: Api.GameState) =
               Value = expected
               Detail = sprintf "%s; positions %A, expected best hand after redraw %.0f" outcome positions expected }
 
-    let evaluated, rule = Search.choose input
-    let candidates = evaluated |> List.truncate 5 |> List.map candidate
+    let headIndices, headPlayed, headBreakdown = (Search.plays input).Head
 
-    match fst evaluated.Head with
-    | Search.PlayCards(indices, _, best) ->
-        Play indices, decision seq g candidates.Head.Action rule candidates (Some best.Total)
-    | Search.DiscardCards(indices, _) -> Discard indices, decision seq g candidates.Head.Action rule candidates None
+    let pick =
+        net
+        |> Option.map (fun n -> PlayNet.choose n situation (hand |> List.map snd) levels |> Option.map (fun (positions, total, _) -> positions |> List.map (fun p -> fst hand[p]), total))
+
+    let tag =
+        match pick with
+        | None -> None
+        | Some None -> Some "network out of scope"
+        | Some(Some(indices, total)) when List.sort indices = List.sort headIndices && total = headBreakdown.Total ->
+            Some "network agrees"
+        | Some(Some(indices, total)) ->
+            Some(sprintf "network differs: %A %.0f vs search %A %.0f" indices total headIndices headBreakdown.Total)
+
+    match pick with
+    | Some(Some(indices, total)) when total >= input.Needed ->
+        let outlook: Search.Outlook =
+            { Clears = 1.0
+              MeanHands = 1.0
+              MeanChips = total }
+
+        let head = candidate (Search.PlayCards(headIndices, headPlayed, headBreakdown), outlook)
+
+        let chosen =
+            if tag = Some "network agrees" then
+                head
+            else
+                { head with
+                    Action = sprintf "network play %A" indices
+                    Value = total
+                    Detail = sprintf "network pick; positions %A, scores %.0f now" indices total }
+
+        Play indices,
+        decision seq g chosen.Action ("clears the blind now; network pick (" + tag.Value + ")") [ chosen ] (Some total)
+    | _ ->
+        let evaluated, rule = Search.choose input
+        let rule = tag |> Option.fold (fun r t -> r + "; " + t) rule
+        let candidates = evaluated |> List.truncate 5 |> List.map candidate
+
+        match fst evaluated.Head with
+        | Search.PlayCards(indices, _, best) ->
+            Play indices, decision seq g candidates.Head.Action rule candidates (Some best.Total)
+        | Search.DiscardCards(indices, _) -> Discard indices, decision seq g candidates.Head.Action rule candidates None
 
 let private planetHand key =
     match key with
@@ -668,12 +705,12 @@ let private useTarot seq (g: Api.GameState) : (Action * Decision) option =
             else
                 None)
 
-let decide (seq: int) (g: Api.GameState) : Action * Decision =
+let decideWith (net: PlayNet.Net option) (seq: int) (g: Api.GameState) : Action * Decision =
     match g.State with
     | Api.State.SelectingHand ->
         liftVerdantLeaf seq g
         |> Option.orElseWith (fun () -> useTarot seq g)
-        |> Option.defaultWith (fun () -> chooseAction seq g)
+        |> Option.defaultWith (fun () -> chooseAction net seq g)
     | Api.State.BlindSelect ->
         let chosen =
             g.Blinds
@@ -690,3 +727,5 @@ let decide (seq: int) (g: Api.GameState) : Action * Decision =
     | Api.State.SmodsBoosterOpened -> packAction seq g
     | Api.State.GameOver -> passive seq g Stop "stop" "game is over"
     | other -> passive seq g Stop "stop" (sprintf "unexpected state %A, skeleton policy stops" other)
+
+let decide (seq: int) (g: Api.GameState) : Action * Decision = decideWith None seq g

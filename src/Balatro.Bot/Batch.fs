@@ -57,7 +57,7 @@ let private csvLine (r: Row) =
 
     sprintf "%s,%s,%d,%d,%d,%d,%d,%d,%d" r.Seed outcome r.Ante r.Round r.Plays r.Discards r.Purchases r.Exact r.Mismatches
 
-let run (client: Api.Client) (deck: Api.Deck) (stake: Api.Stake) (seeds: string list) (outDir: string) : Row list =
+let run (net: PlayNet.Net option) (client: Api.Client) (deck: Api.Deck) (stake: Api.Stake) (seeds: string list) (outDir: string) : Row list =
     let stakeName = (sprintf "%A" stake).ToUpperInvariant()
     Directory.CreateDirectory outDir |> ignore
     let csv = Path.Combine(outDir, sprintf "batch-%s.csv" stakeName)
@@ -67,7 +67,7 @@ let run (client: Api.Client) (deck: Api.Deck) (stake: Api.Stake) (seeds: string 
     seeds
     |> List.map (fun seed ->
         let row =
-            match Runner.runOne client deck stake seed (Path.Combine(outDir, sprintf "%s-%s" stakeName seed)) with
+            match Runner.runOne net client deck stake seed (Path.Combine(outDir, sprintf "%s-%s" stakeName seed)) with
             | Ok r ->
                 { Seed = seed
                   Outcome = Runner.outcomeText r.Outcome

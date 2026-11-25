@@ -7,8 +7,8 @@ let private usage =
     String.Join(
         "\n",
         [ "usage:"
-          "  run --deck <DECK> --stake <STAKE> --seed <SEED> [--url <URL>]"
-          "  batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--url <URL>]"
+          "  run --deck <DECK> --stake <STAKE> --seed <SEED> [--net <PATH>] [--url <URL>]"
+          "  batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--net <PATH>] [--url <URL>]"
           "  oracle [--deck <DECK>] [--stake <STAKE>] [--keys k1,k2,...] [--url <URL>]" ]
     )
 
@@ -74,10 +74,11 @@ let private batch (rest: string list) =
         let prefix = Map.tryFind "--prefix" o |> Option.defaultValue "B"
         let url = Map.tryFind "--url" o |> Option.defaultValue "http://127.0.0.1:12346"
         let seeds = [ for i in 1..count -> sprintf "%s%04d" prefix i ]
-        Batch.run (Api.create url) deck stake seeds "runs" |> Batch.summary stakeName |> printfn "%s"
+        let net = Map.tryFind "--net" o |> Option.map PlayNet.load
+        Batch.run net (Api.create url) deck stake seeds "runs" |> Batch.summary stakeName |> printfn "%s"
         0
     | None ->
-        eprintfn "usage: batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--url <URL>]"
+        eprintfn "usage: batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--net <PATH>] [--url <URL>]"
         2
 
 [<EntryPoint>]
@@ -96,7 +97,14 @@ let main argv =
                 | Some d, Some s, Some seed ->
                     match parseUnion<Api.Deck> d, parseUnion<Api.Stake> s with
                     | Some deck, Some stake ->
-                        Some(deck, stake, s, seed, Map.tryFind "--url" o |> Option.defaultValue "http://127.0.0.1:12346")
+                        Some(
+                            deck,
+                            stake,
+                            s,
+                            seed,
+                            Map.tryFind "--url" o |> Option.defaultValue "http://127.0.0.1:12346",
+                            Map.tryFind "--net" o |> Option.map PlayNet.load
+                        )
                     | _ -> None
                 | _ -> None)
         | _ -> None
@@ -105,8 +113,8 @@ let main argv =
     | None ->
         eprintfn "%s" usage
         2
-    | Some(deck, stake, stakeName, seed, url) ->
-        match Runner.runOne (Api.create url) deck stake seed (sprintf "runs/%s-%s" stakeName seed) with
+    | Some(deck, stake, stakeName, seed, url, net) ->
+        match Runner.runOne net (Api.create url) deck stake seed (sprintf "runs/%s-%s" stakeName seed) with
         | Ok r ->
             printfn
                 "%s, ante %d, round %d, plays %d, exact predictions %d/%d"
