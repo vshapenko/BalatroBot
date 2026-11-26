@@ -436,13 +436,7 @@ let private shopAction seq (g: Api.GameState) =
 
         let untargeted = evaluated |> List.filter (not << isTarot)
 
-        let choice =
-            if hunting then
-                untargeted
-                |> List.tryFind (fun e -> isXMult e && Experts.passes owned e)
-                |> Option.orElse (Experts.judge owned untargeted)
-            else
-                Experts.judge owned untargeted
+        let choice = Experts.judge owned plan (fun e -> hunting && isXMult e) untargeted
 
         let tarotChoice =
             evaluated
@@ -462,7 +456,7 @@ let private shopAction seq (g: Api.GameState) =
                     (lastNote + earlyNote + goalNote + bossNote + planText)
 
             BuyCard(Shop.position e.Offer),
-            decisionWith (Experts.views owned plan e) seq g candidates.Head.Action rule candidates None
+            decisionWith (Experts.views owned plan (hunting && isXMult e) e) seq g candidates.Head.Action rule candidates None
 
         match choice with
         | Some e -> buy e (needed e)
@@ -620,7 +614,7 @@ let private shopAction seq (g: Api.GameState) =
 
                             NextRound,
                             decisionWith
-                                (Experts.views owned plan best)
+                                (Experts.views owned plan (hunting && isXMult best) best)
                                 seq
                                 g
                                 "next round"
