@@ -7,8 +7,8 @@ let private usage =
     String.Join(
         "\n",
         [ "usage:"
-          "  run --deck <DECK> --stake <STAKE> --seed <SEED> [--net <PATH>] [--url <URL>]"
-          "  batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--net <PATH>] [--url <URL>]"
+          "  run --deck <DECK> --stake <STAKE> --seed <SEED> [--net <PATH>] [--shop-net <PATH>] [--url <URL>]"
+          "  batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--net <PATH>] [--shop-net <PATH>] [--url <URL>]"
           "  oracle [--deck <DECK>] [--stake <STAKE>] [--keys k1,k2,...] [--url <URL>]" ]
     )
 
@@ -79,12 +79,13 @@ let private batch (rest: string list) =
         let url = Map.tryFind "--url" o |> Option.defaultValue "http://127.0.0.1:12346"
         let seeds = [ for i in 1..count -> sprintf "%s%04d" prefix i ]
         let net = Map.tryFind "--net" o |> Option.map PlayNet.load
-        Shop.useNetwork net
+        let shopNet = Map.tryFind "--shop-net" o |> Option.map PlayNet.load
+        Shop.useNetwork shopNet
         Batch.run net (Api.create url) deck stake seeds "runs" |> Batch.summary stakeName |> printfn "%s"
-        if net.IsSome then printfn "%s" (shopLine ())
+        if shopNet.IsSome then printfn "%s" (shopLine ())
         0
     | None ->
-        eprintfn "usage: batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--net <PATH>] [--url <URL>]"
+        eprintfn "usage: batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--net <PATH>] [--shop-net <PATH>] [--url <URL>]"
         2
 
 [<EntryPoint>]
@@ -109,7 +110,8 @@ let main argv =
                             s,
                             seed,
                             Map.tryFind "--url" o |> Option.defaultValue "http://127.0.0.1:12346",
-                            Map.tryFind "--net" o |> Option.map PlayNet.load
+                            Map.tryFind "--net" o |> Option.map PlayNet.load,
+                            Map.tryFind "--shop-net" o |> Option.map PlayNet.load
                         )
                     | _ -> None
                 | _ -> None)
@@ -119,8 +121,8 @@ let main argv =
     | None ->
         eprintfn "%s" usage
         2
-    | Some(deck, stake, stakeName, seed, url, net) ->
-        Shop.useNetwork net
+    | Some(deck, stake, stakeName, seed, url, net, shopNet) ->
+        Shop.useNetwork shopNet
 
         match Runner.runOne net (Api.create url) deck stake seed (sprintf "runs/%s-%s" stakeName seed) with
         | Ok r ->
@@ -133,7 +135,7 @@ let main argv =
                 r.ExactPredictions
                 r.Plays
 
-            if net.IsSome then printfn "%s" (shopLine ())
+            if shopNet.IsSome then printfn "%s" (shopLine ())
             0
         | Error e ->
             eprintfn "API error: %A" e
