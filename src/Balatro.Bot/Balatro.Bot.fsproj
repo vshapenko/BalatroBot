@@ -14,6 +14,7 @@
     <Compile Include="Shop.fs" />
     <Compile Include="Plan.fs" />
     <Compile Include="Tarot.fs" />
+    <Compile Include="Experts.fs" />
     <Compile Include="Policy.fs" />
     <Compile Include="Runner.fs" />
     <Compile Include="Batch.fs" />

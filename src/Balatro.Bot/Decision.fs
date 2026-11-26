@@ -7,6 +7,11 @@ type Candidate =
       Value: float
       Detail: string }
 
+type ExpertView =
+    { Expert: string
+      Points: float
+      Why: string }
+
 type Decision =
     { Seq: int
       Ante: int
@@ -16,6 +21,7 @@ type Decision =
       Rule: string
       Candidates: Candidate list
       Seen: string list
+      Experts: ExpertView list
       Predicted: float option }
 
 type Outcome =
@@ -34,6 +40,13 @@ let private candidateJson (c: Candidate) =
     o.Add("detail", str c.Detail)
     o :> JsonNode
 
+let private expertJson (v: ExpertView) =
+    let o = JsonObject()
+    o.Add("expert", str v.Expert)
+    o.Add("points", num v.Points)
+    o.Add("why", str v.Why)
+    o :> JsonNode
+
 let toJson (d: Decision) : string =
     let o = JsonObject()
     o.Add("kind", str "decision")
@@ -45,6 +58,7 @@ let toJson (d: Decision) : string =
     o.Add("rule", str d.Rule)
     o.Add("candidates", JsonArray(d.Candidates |> List.map candidateJson |> Array.ofList))
     o.Add("seen", JsonArray(d.Seen |> List.map str |> Array.ofList))
+    o.Add("experts", JsonArray(d.Experts |> List.map expertJson |> Array.ofList))
     o.Add("predicted", d.Predicted |> Option.map num |> Option.toObj)
     o.ToJsonString()
 
@@ -62,7 +76,16 @@ let toText (d: Decision) : string =
     let seen =
         if d.Seen.IsEmpty then "" else "; seen: " + String.concat ", " d.Seen
 
-    sprintf "#%d ante %d round %d %s: %s%s; rule: %s%s" d.Seq d.Ante d.Round d.Phase chosen next d.Rule seen
+    let experts =
+        if d.Experts.IsEmpty then
+            ""
+        else
+            d.Experts
+            |> List.map (fun v -> sprintf "%s %+.0f (%s)" v.Expert v.Points v.Why)
+            |> String.concat ", "
+            |> sprintf "; experts: %s"
+
+    sprintf "#%d ante %d round %d %s: %s%s; rule: %s%s%s" d.Seq d.Ante d.Round d.Phase chosen next d.Rule experts seen
 
 let outcomeToJson (o: Outcome) : string =
     let j = JsonObject()

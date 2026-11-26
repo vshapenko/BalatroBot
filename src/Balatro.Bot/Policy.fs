@@ -32,7 +32,7 @@ let private symbol (card: Card) =
 let private describe (breakdown: Scoring.ScoreBreakdown) (played: Card list) =
     sprintf "play %s [%s]" (HandType.label breakdown.HandType) (played |> List.map symbol |> String.concat " ")
 
-let private decision seq (g: Api.GameState) chosen rule candidates predicted : Decision =
+let private decisionWith experts seq (g: Api.GameState) chosen rule candidates predicted : Decision =
     let seen =
         match g.State with
         | Api.State.Shop ->
@@ -50,7 +50,11 @@ let private decision seq (g: Api.GameState) chosen rule candidates predicted : D
       Rule = rule
       Candidates = candidates
       Seen = seen
+      Experts = experts
       Predicted = predicted }
+
+let private decision seq (g: Api.GameState) chosen rule candidates predicted : Decision =
+    decisionWith [] seq g chosen rule candidates predicted
 
 let private passive seq (g: Api.GameState) action chosen rule =
     action, decision seq g chosen rule [] None
@@ -435,10 +439,10 @@ let private shopAction seq (g: Api.GameState) =
         let choice =
             if hunting then
                 untargeted
-                |> List.tryFind (fun e -> isXMult e && e.After / e.Before >= Shop.threshold owned e)
-                |> Option.orElse (Shop.choose owned untargeted)
+                |> List.tryFind (fun e -> isXMult e && Experts.passes owned e)
+                |> Option.orElse (Experts.judge owned untargeted)
             else
-                Shop.choose owned untargeted
+                Experts.judge owned untargeted
 
         let tarotChoice =
             evaluated
@@ -457,7 +461,8 @@ let private shopAction seq (g: Api.GameState) =
                     (thresholdText (offered e.Offer) bar)
                     (lastNote + earlyNote + goalNote + bossNote + planText)
 
-            BuyCard(Shop.position e.Offer), decision seq g candidates.Head.Action rule candidates None
+            BuyCard(Shop.position e.Offer),
+            decisionWith (Experts.views owned plan e) seq g candidates.Head.Action rule candidates None
 
         match choice with
         | Some e -> buy e (needed e)
@@ -613,7 +618,15 @@ let private shopAction seq (g: Api.GameState) =
                                 + bossNote
                                 + planText
 
-                            NextRound, decision seq g "next round" rule (evaluated |> List.truncate 5 |> List.map declined) None
+                            NextRound,
+                            decisionWith
+                                (Experts.views owned plan best)
+                                seq
+                                g
+                                "next round"
+                                rule
+                                (evaluated |> List.truncate 5 |> List.map declined)
+                                None
 
 let private packAction seq (g: Api.GameState) =
     let build = shopBuild g
