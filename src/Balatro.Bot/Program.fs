@@ -81,7 +81,7 @@ let private batch (rest: string list) =
         let net = Map.tryFind "--net" o |> Option.map PlayNet.load
         let shopNet = Map.tryFind "--shop-net" o |> Option.map PlayNet.load
         Shop.useNetwork shopNet
-        Batch.run net (Api.create url) deck stake seeds "runs" |> Batch.summary stakeName |> printfn "%s"
+        Batch.run net (Game.live (Api.create url)) deck stake seeds "runs" |> Batch.summary stakeName |> printfn "%s"
         if shopNet.IsSome then printfn "%s" (shopLine ())
         0
     | None ->
@@ -124,7 +124,7 @@ let main argv =
     | Some(deck, stake, stakeName, seed, url, net, shopNet) ->
         Shop.useNetwork shopNet
 
-        match Runner.runOne net (Api.create url) deck stake seed (sprintf "runs/%s-%s" stakeName seed) with
+        match Runner.runOne net (Game.live (Api.create url)) deck stake seed (sprintf "runs/%s-%s" stakeName seed) with
         | Ok r ->
             printfn
                 "%s, ante %d, round %d, plays %d, exact predictions %d/%d"

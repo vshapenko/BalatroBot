@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <Compile Include="Api.fs" />
+    <Compile Include="Game.fs" />
     <Compile Include="Mapping.fs" />
     <Compile Include="Decision.fs" />
     <Compile Include="Search.fs" />

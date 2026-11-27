@@ -36,13 +36,13 @@ let allHandDebuffed (g: Api.GameState) =
     not g.Hand.Cards.IsEmpty && g.Hand.Cards |> List.forall (fun c -> c.State.Debuff)
 
 // the reply to a sale still shows the hand debuffed for about 0.1 s while Verdant Leaf is being lifted
-let private settle client (after: Api.GameState) =
+let private settle (game: Game.Game) (after: Api.GameState) =
     let rec reread tries (g: Api.GameState) =
         if tries = 0 || g.State <> Api.State.SelectingHand || not (allHandDebuffed g) then
             Ok g
         else
             System.Threading.Thread.Sleep 100
-            Api.gamestate client |> Result.bind (reread (tries - 1))
+            game.State () |> Result.bind (reread (tries - 1))
 
     reread 20 after
 
@@ -109,7 +109,7 @@ let context (seq: int) (g: Api.GameState) : string * string =
 
 let runOne
     (net: PlayNet.Net option)
-    (client: Api.Client)
+    (game: Game.Game)
     (deck: Api.Deck)
     (stake: Api.Stake)
     (seed: string)
@@ -159,7 +159,7 @@ let runOne
                 match action with
                 | Policy.Stop -> finish (Aborted decision.Rule) g plays discards exact purchases sales rerolls packs
                 | Policy.Play cards ->
-                    Api.play client cards
+                    game.Play cards
                     |> Result.bind (fun after ->
                         // Round.Chips is cumulative for the blind, so one play scores the difference
                         let outcome: Decision.Outcome =
@@ -176,37 +176,37 @@ let runOne
                         let hit = if outcome.Predicted = outcome.Actual then 1 else 0
                         loop startWon (seq + 1) after (plays + 1) discards (exact + hit) purchases sales rerolls packs)
                 | Policy.Discard cards ->
-                    Api.discard client cards
+                    game.Discard cards
                     |> Result.bind (fun after -> loop startWon (seq + 1) after plays (discards + 1) exact purchases sales rerolls packs)
-                | Policy.SelectBlind -> next (Api.select client)
-                | Policy.CashOut -> next (Api.cashOut client)
-                | Policy.NextRound -> next (Api.nextRound client)
+                | Policy.SelectBlind -> next (game.Select ())
+                | Policy.CashOut -> next (game.CashOut ())
+                | Policy.NextRound -> next (game.NextRound ())
                 | Policy.BuyCard index ->
-                    Api.buy client (Api.BuyCard index)
+                    game.Buy (Api.BuyCard index)
                     |> Result.bind (fun after ->
                         loop startWon (seq + 1) after plays discards exact (purchases + 1) sales rerolls packs)
                 | Policy.SellJoker index ->
-                    Api.sell client (Api.SellJoker index)
-                    |> Result.bind (fun after -> if g.State = Api.State.SelectingHand then settle client after else Ok after)
+                    game.Sell (Api.SellJoker index)
+                    |> Result.bind (fun after -> if g.State = Api.State.SelectingHand then settle game after else Ok after)
                     |> Result.bind (fun after ->
                         loop startWon (seq + 1) after plays discards exact purchases (sales + 1) rerolls packs)
                 | Policy.Reroll ->
-                    Api.reroll client
+                    game.Reroll ()
                     |> Result.bind (fun after ->
                         loop startWon (seq + 1) after plays discards exact purchases sales (rerolls + 1) packs)
                 | Policy.BuyPack index ->
-                    Api.buy client (Api.BuyPack index)
+                    game.Buy (Api.BuyPack index)
                     |> Result.bind (fun after ->
                         loop startWon (seq + 1) after plays discards exact purchases sales rerolls (packs + 1))
-                | Policy.PickPack index -> next (Api.pack client (Api.PickCard(index, [])))
-                | Policy.UsePlanet index -> next (Api.useConsumable client index [])
-                | Policy.UseTarot(index, targets) -> next (Api.useConsumable client index targets)
-                | Policy.ReorderJokers order -> next (Api.rearrange client (Api.RearrangeJokers order))
-                | Policy.SkipPack -> next (Api.pack client Api.SkipPack)
+                | Policy.PickPack index -> next (game.Pack (Api.PickCard(index, [])))
+                | Policy.UsePlanet index -> next (game.Use index [])
+                | Policy.UseTarot(index, targets) -> next (game.Use index targets)
+                | Policy.ReorderJokers order -> next (game.Rearrange (Api.RearrangeJokers order))
+                | Policy.SkipPack -> next (game.Pack Api.SkipPack)
             with ex ->
                 finish (Aborted(oneLine (ex.GetType().Name + ": " + ex.Message))) g plays discards exact purchases sales rerolls packs
 
     // A start sent while the game is in GAME_OVER fails, so go through the menu first
-    Api.menu client
-    |> Result.bind (fun _ -> Api.start client deck stake (Some seed))
+    game.Menu ()
+    |> Result.bind (fun _ -> game.Start deck stake (Some seed))
     |> Result.bind (fun g -> loop g.Won 1 g 0 0 0 0 0 0 0)
