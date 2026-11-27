@@ -209,7 +209,7 @@ let private rounds (seed: int) (samples: int) (build: Build) =
     | true, cached -> cached
     | _ ->
         let computed =
-            Array.init samples (fun s ->
+            Array.Parallel.init samples (fun s ->
                 let cards = Array.ofList build.Deck
                 Random(seed + s).Shuffle cards
                 simulate build cards)
@@ -360,8 +360,9 @@ let private horizon (seed: int) (samples: int) (build: Build) : float =
         let score0, rates = roundStats seed samples (revalue build)
 
         let later =
-            [ 1 .. 5 ]
-            |> List.map (fun rounds -> roundScore seed samples (revalue (grow rates rounds (decay build rounds))))
+            [| 1 .. 5 |]
+            |> Array.Parallel.map (fun rounds -> roundScore seed samples (revalue (grow rates rounds (decay build rounds))))
+            |> List.ofArray
 
         score0 :: later |> List.average
     else
@@ -418,9 +419,9 @@ let private placed (value: Build -> float) (build: Build) offer =
         let bought = apply build offer
         let rest = List.take (bought.Jokers.Length - 1) bought.Jokers
 
-        [ 0 .. rest.Length ]
-        |> List.map (fun i -> value (revalue { bought with Jokers = List.insertAt i joker rest }))
-        |> List.max
+        [| 0 .. rest.Length |]
+        |> Array.Parallel.map (fun i -> value (revalue { bought with Jokers = List.insertAt i joker rest }))
+        |> Array.max
     | _ -> value (apply build offer)
 
 let evaluate (seed: int) (samples: int) (money: int) (boss: string option) (build: Build) (offers: Offer list) : Evaluated list =
@@ -443,11 +444,13 @@ let evaluate (seed: int) (samples: int) (money: int) (boss: string option) (buil
            | JokerOffer _ -> build.Jokers.Length < build.Situation.JokerSlots
            | PlanetOffer _
            | TarotOffer _ -> true)
-    |> List.map (fun offer ->
+    |> Array.ofList
+    |> Array.Parallel.map (fun offer ->
         { Offer = offer
           Before = before
           After = placed value current offer
           InterestLost = interest money - interest (money - cost offer) })
+    |> List.ofArray
     |> List.sortBy (fun e -> -(e.After / e.Before), cost e.Offer, position e.Offer)
 
 // early in a run the caller passes InterestLost without interest: joker power matters more than saving
@@ -514,14 +517,18 @@ let upgrades (seed: int) (samples: int) (money: int) (build: Build) (offers: Off
                                   Situation = { current.Situation with Money = current.Situation.Money + owned.SellValue } }
 
                           yield
-                              { Sell = sell
-                                Offer = offer
-                                Before = before
-                                After = placed (horizon seed samples) sold offer
-                                Net = net
-                                Threshold = 1.05 + 0.05 * float (interest held - interest (held - price)) }
+                              fun () ->
+                                  { Sell = sell
+                                    Offer = offer
+                                    Before = before
+                                    After = placed (horizon seed samples) sold offer
+                                    Net = net
+                                    Threshold = 1.05 + 0.05 * float (interest held - interest (held - price)) }
               | PlanetOffer _
               | TarotOffer _ -> () ]
+        |> Array.ofList
+        |> Array.Parallel.map (fun upgrade -> upgrade ())
+        |> List.ofArray
         |> List.sortBy (fun u -> -(u.After / u.Before), u.Net, u.Sell)
 
 let chooseUpgrade (upgrades: Upgrade list) : Upgrade option =

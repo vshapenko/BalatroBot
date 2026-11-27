@@ -17,6 +17,7 @@
     <Compile Include="JokersCounterTests.fs" />
     <Compile Include="SearchTests.fs" />
     <Compile Include="ShopTests.fs" />
+    <Compile Include="ShopSpeedTests.fs" />
     <Compile Include="GameTests.fs" />
     <Compile Include="BatchTests.fs" />
     <Compile Include="BossTests.fs" />
