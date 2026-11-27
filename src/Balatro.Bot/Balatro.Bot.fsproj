@@ -17,10 +17,12 @@
     <Compile Include="Tarot.fs" />
     <Compile Include="Experts.fs" />
     <Compile Include="Policy.fs" />
+    <Compile Include="SimContent.fs" />
     <Compile Include="Runner.fs" />
     <Compile Include="Batch.fs" />
     <Compile Include="Oracle.fs" />
     <Compile Include="Program.fs" />
+    <EmbeddedResource Include="..\..\fixtures\jokers.json" LogicalName="jokers.json" />
   </ItemGroup>
 
   <ItemGroup>
