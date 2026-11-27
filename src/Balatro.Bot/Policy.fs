@@ -4,6 +4,8 @@ open Balatro.Core
 open Balatro.Core.Domain
 open Balatro.Bot.Decision
 
+let mutable shopSamples = (8, 20)
+
 type Action =
     | Play of int list
     | Discard of int list
@@ -222,7 +224,7 @@ let private liftVerdantLeaf seq (g: Api.GameState) : (Action * Decision) option 
         let scored =
             sellable
             |> List.map (fun (i, c) ->
-                i, c.Label, Shop.roundScore (shopSeed g) 8 { clear with Jokers = List.removeAt i clear.Jokers })
+                i, c.Label, Shop.roundScore (shopSeed g) (fst shopSamples) { clear with Jokers = List.removeAt i clear.Jokers })
             |> List.sortBy (fun (i, _, score) -> -score, i)
 
         let candidate (_, name, score) : Candidate =
@@ -322,7 +324,7 @@ let private shopAction seq (g: Api.GameState) =
             |> Option.map (fun b ->
                 let revalued = Shop.revalue build
                 let scored = boss |> Option.fold (fun built name -> Shop.underBoss name built) revalued
-                Shop.roundScore (shopSeed g) 20 scored, float b.Boss.Score)
+                Shop.roundScore (shopSeed g) (snd shopSamples) scored, float b.Boss.Score)
             |> Option.filter (fun (score, target) -> score < 1.5 * target)
 
         let behind = behindScore.IsSome
@@ -400,7 +402,7 @@ let private shopAction seq (g: Api.GameState) =
         let offered (offer: Shop.Offer) = g.Shop.Cards[Shop.position offer]
 
         let evaluated =
-            Shop.evaluate seed 20 g.Money boss build offers
+            Shop.evaluate seed (snd shopSamples) g.Money boss build offers
             |> List.map (fun e ->
                 { e with
                     InterestLost = (if relaxed || early then 0 else e.InterestLost) + stickerLoss (offered e.Offer) })
@@ -462,7 +464,7 @@ let private shopAction seq (g: Api.GameState) =
         | Some e -> buy e (needed e)
         | None ->
             let upgrades =
-                Shop.upgrades seed 20 g.Money build offers
+                Shop.upgrades seed (snd shopSamples) g.Money build offers
                 |> List.filter (fun u -> not g.Jokers.Cards[u.Sell].Modifier.Eternal)
                 |> List.map (fun u ->
                     { u with
@@ -502,11 +504,11 @@ let private shopAction seq (g: Api.GameState) =
                 SellJoker u.Sell, decision seq g (sprintf "sell %s to buy %s" sold.Name bought) rule candidates None
             | None, Some e -> buy e (((max 1.15 (Shop.threshold owned e)) - 1.0) * 100.0)
             | None, None ->
-                let order = Shop.bestOrder seed 8 build
+                let order = Shop.bestOrder seed (fst shopSamples) build
 
                 if order <> [ 0 .. build.Jokers.Length - 1 ] then
                     let names = order |> List.map (fun i -> build.Jokers[i].Name) |> String.concat ", "
-                    let score order = Shop.roundScore seed 8 { build with Jokers = order |> List.map (fun i -> build.Jokers[i]) }
+                    let score order = Shop.roundScore seed (fst shopSamples) { build with Jokers = order |> List.map (fun i -> build.Jokers[i]) }
 
                     ReorderJokers order,
                     decision
@@ -634,7 +636,7 @@ let private packAction seq (g: Api.GameState) =
             | Api.CardSet.Planet -> planetHand c.Key |> Option.map (fun hand -> Shop.PlanetOffer(i, hand, c.Label, 0))
             | _ -> None)
 
-    match Shop.pickFromPack (shopSeed g) 20 (Mapping.upcomingBoss g) build cards with
+    match Shop.pickFromPack (shopSeed g) (snd shopSamples) (Mapping.upcomingBoss g) build cards with
     | Some e ->
         let name = offerName e.Offer
 
@@ -687,7 +689,7 @@ let private useTarot seq (g: Api.GameState) : (Action * Decision) option =
         | [] -> None
         | chosen ->
             let after = { build with Deck = pile.Deck @ Tarot.transform effect chosen cards }
-            let before, later = Shop.roundScore seed 8 build, Shop.roundScore seed 8 after
+            let before, later = Shop.roundScore seed (fst shopSamples) build, Shop.roundScore seed (fst shopSamples) after
 
             if later > before then
                 let names = chosen |> List.map (fun j -> symbol cards[j]) |> String.concat " "

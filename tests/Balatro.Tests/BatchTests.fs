@@ -90,3 +90,37 @@ let ``context line names the blind and the owned jokers`` () =
     Assert.Equal(1, doc.RootElement.GetProperty("jokers").GetArrayLength())
     Assert.StartsWith("#7 context: blind ", text)
     Assert.DoesNotContain('\n', text)
+
+[<Fact>]
+let ``parallel runs return rows and write the csv in seed order`` () =
+    let antes = dict [ "P1", (3, 400); "P2", (5, 50); "P3", (2, 250); "P4", (7, 0); "P5", (4, 150) ]
+    let unexpected _ = failwith "unexpected call"
+    let over = load "GAME_OVER"
+
+    let makeGame () : Game.Game =
+        { Menu = fun () -> Ok over
+          Start =
+            fun _ _ seed ->
+                let ante, delay = antes[Option.get seed]
+                Threading.Thread.Sleep(delay: int)
+                Ok { over with AnteNum = ante }
+          State = unexpected
+          Select = unexpected
+          Play = unexpected
+          Discard = unexpected
+          Buy = unexpected
+          Sell = unexpected
+          Reroll = unexpected
+          CashOut = unexpected
+          NextRound = unexpected
+          Pack = unexpected
+          Use = fun _ _ -> failwith "unexpected call"
+          Rearrange = unexpected }
+
+    let seeds = [ "P1"; "P2"; "P3"; "P4"; "P5" ]
+    let dir = Path.Combine(Path.GetTempPath(), "balatro-batch-" + Guid.NewGuid().ToString("N"))
+    let rows = Batch.runParallel 3 None makeGame Api.Deck.Red Api.Stake.White seeds dir
+    Assert.Equal<string list>(seeds, rows |> List.map (fun r -> r.Seed))
+    Assert.Equal<int list>([ 3; 5; 2; 7; 4 ], rows |> List.map (fun r -> r.Ante))
+    let lines = File.ReadAllLines(Path.Combine(dir, "batch-WHITE.csv"))
+    Assert.Equal<string list>(seeds, lines |> Array.skip 1 |> Array.map (fun l -> l.Split(',')[0]) |> List.ofArray)

@@ -284,35 +284,50 @@ let private endsWonOrLost (output: ITestOutputHelper) seed =
         | _ -> ()
     | Error e, _ -> failwithf "%A" e
 
-// whole runs take hours in a Debug build; filter them out with Category!=WholeRun
+let private fastSamples run =
+    Policy.shopSamples <- (4, 8)
+
+    try
+        run ()
+    finally
+        Policy.shopSamples <- (8, 20)
+
+// whole runs are slow in a Debug build; filter them out with Category!=WholeRun
+[<CollectionDefinition("WholeRun", DisableParallelization = true)>]
+type WholeRunCollection() = class end
+
+[<Collection("WholeRun")>]
 [<Trait("Category", "WholeRun")>]
 type WholeRunSim2(output: ITestOutputHelper) =
     [<Fact>]
-    member _.``a whole run ends won or lost`` () = endsWonOrLost output "SIM2"
+    member _.``a whole run ends won or lost`` () = fastSamples (fun () -> endsWonOrLost output "SIM2")
 
+[<Collection("WholeRun")>]
 [<Trait("Category", "WholeRun")>]
 type WholeRunSim3(output: ITestOutputHelper) =
     [<Fact>]
-    member _.``a whole run ends won or lost`` () = endsWonOrLost output "SIM3"
+    member _.``a whole run ends won or lost`` () = fastSamples (fun () -> endsWonOrLost output "SIM3")
 
+[<Collection("WholeRun")>]
 [<Trait("Category", "WholeRun")>]
 type SameSeed() =
     [<Fact>]
     member _.``two runs with the same seed write the same trace`` () =
-        let dirs = [ tempDir (); tempDir () ]
+        fastSamples (fun () ->
+            let dirs = [ tempDir (); tempDir () ]
 
-        let results =
-            dirs
-            |> List.map (fun dir -> System.Threading.Tasks.Task.Run(fun () -> fst (wholeRun "SIM1" dir)))
-            |> List.map (fun t -> t.Result)
+            let results =
+                dirs
+                |> List.map (fun dir -> System.Threading.Tasks.Task.Run(fun () -> fst (wholeRun "SIM1" dir)))
+                |> List.map (fun t -> t.Result)
 
-        for result in results do
-            match result with
-            | Ok r ->
-                match r.Outcome with
-                | Runner.Aborted reason -> failwithf "aborted: %s" reason
-                | _ -> ()
-            | Error e -> failwithf "%A" e
+            for result in results do
+                match result with
+                | Ok r ->
+                    match r.Outcome with
+                    | Runner.Aborted reason -> failwithf "aborted: %s" reason
+                    | _ -> ()
+                | Error e -> failwithf "%A" e
 
-        let text dir = File.ReadAllText(Path.Combine(dir, "trace.txt"))
-        Assert.Equal(text dirs[0], text dirs[1])
+            let text dir = File.ReadAllText(Path.Combine(dir, "trace.txt"))
+            Assert.Equal(text dirs[0], text dirs[1]))

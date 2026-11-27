@@ -57,38 +57,74 @@ let private csvLine (r: Row) =
 
     sprintf "%s,%s,%d,%d,%d,%d,%d,%d,%d" r.Seed outcome r.Ante r.Round r.Plays r.Discards r.Purchases r.Exact r.Mismatches
 
-let run (net: PlayNet.Net option) (game: Game.Game) (deck: Api.Deck) (stake: Api.Stake) (seeds: string list) (outDir: string) : Row list =
-    let stakeName = (sprintf "%A" stake).ToUpperInvariant()
+let private header = "seed,outcome,ante,round,plays,discards,purchases,exact,mismatches"
+
+let private stakeName (stake: Api.Stake) = (sprintf "%A" stake).ToUpperInvariant()
+
+let private playSeed net game deck stake (seed: string) (outDir: string) : Row =
+    let result = Runner.runOne net game deck stake seed (Path.Combine(outDir, sprintf "%s-%s" (stakeName stake) seed))
+
+    let row =
+        match result with
+        | Ok r ->
+            { Seed = seed
+              Outcome = Runner.outcomeText r.Outcome
+              Ante = r.Ante
+              Round = r.Round
+              Plays = r.Plays
+              Discards = r.Discards
+              Purchases = r.Purchases
+              Exact = r.ExactPredictions
+              Mismatches = r.Mismatches }
+        | Error e ->
+            { Seed = seed
+              Outcome = errorText e
+              Ante = 0
+              Round = 0
+              Plays = 0
+              Discards = 0
+              Purchases = 0
+              Exact = 0
+              Mismatches = 0 }
+
+    printfn "%s: %s, ante %d, round %d, plays %d, exact %d/%d" seed row.Outcome row.Ante row.Round row.Plays row.Exact row.Plays
+    row
+
+let private csvPath (stake: Api.Stake) (outDir: string) =
     Directory.CreateDirectory outDir |> ignore
-    let csv = Path.Combine(outDir, sprintf "batch-%s.csv" stakeName)
+    Path.Combine(outDir, sprintf "batch-%s.csv" (stakeName stake))
+
+let run (net: PlayNet.Net option) (game: Game.Game) (deck: Api.Deck) (stake: Api.Stake) (seeds: string list) (outDir: string) : Row list =
+    let csv = csvPath stake outDir
     File.Delete csv
-    File.AppendAllLines(csv, [ "seed,outcome,ante,round,plays,discards,purchases,exact,mismatches" ])
+    File.AppendAllLines(csv, [ header ])
 
     seeds
     |> List.map (fun seed ->
-        let row =
-            match Runner.runOne net game deck stake seed (Path.Combine(outDir, sprintf "%s-%s" stakeName seed)) with
-            | Ok r ->
-                { Seed = seed
-                  Outcome = Runner.outcomeText r.Outcome
-                  Ante = r.Ante
-                  Round = r.Round
-                  Plays = r.Plays
-                  Discards = r.Discards
-                  Purchases = r.Purchases
-                  Exact = r.ExactPredictions
-                  Mismatches = r.Mismatches }
-            | Error e ->
-                { Seed = seed
-                  Outcome = errorText e
-                  Ante = 0
-                  Round = 0
-                  Plays = 0
-                  Discards = 0
-                  Purchases = 0
-                  Exact = 0
-                  Mismatches = 0 }
-
-        printfn "%s: %s, ante %d, round %d, plays %d, exact %d/%d" seed row.Outcome row.Ante row.Round row.Plays row.Exact row.Plays
+        let row = playSeed net game deck stake seed outDir
         File.AppendAllLines(csv, [ csvLine row ])
         row)
+
+let runParallel
+    (degree: int)
+    (net: PlayNet.Net option)
+    (makeGame: unit -> Game.Game)
+    (deck: Api.Deck)
+    (stake: Api.Stake)
+    (seeds: string list)
+    (outDir: string)
+    : Row list =
+    let csv = csvPath stake outDir
+    let seeds = Array.ofList seeds
+    let rows = Array.zeroCreate<Row> seeds.Length
+
+    Threading.Tasks.Parallel.For(
+        0,
+        seeds.Length,
+        Threading.Tasks.ParallelOptions(MaxDegreeOfParallelism = degree),
+        fun i -> rows[i] <- playSeed net (makeGame ()) deck stake seeds[i] outDir
+    )
+    |> ignore
+
+    File.WriteAllLines(csv, header :: [ for r in rows -> csvLine r ])
+    List.ofArray rows

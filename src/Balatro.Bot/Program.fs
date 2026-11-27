@@ -9,6 +9,7 @@ let private usage =
         [ "usage:"
           "  run --deck <DECK> --stake <STAKE> --seed <SEED> [--net <PATH>] [--shop-net <PATH>] [--url <URL>]"
           "  batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--net <PATH>] [--shop-net <PATH>] [--url <URL>]"
+          "  sim --count <N> [--from <K>] [--parallel <P>] [--fast] [--net <PATH>] [--shop-net <PATH>]"
           "  oracle [--deck <DECK>] [--stake <STAKE>] [--keys k1,k2,...] [--url <URL>]" ]
     )
 
@@ -88,11 +89,53 @@ let private batch (rest: string list) =
         eprintfn "usage: batch --deck <DECK> --stake <STAKE> --count <N> [--prefix <P>] [--net <PATH>] [--shop-net <PATH>] [--url <URL>]"
         2
 
+let private sim (rest: string list) =
+    let flags, rest = rest |> List.partition (fun a -> a = "--fast")
+    let fast = not flags.IsEmpty
+
+    let parsed =
+        options rest
+        |> Option.filter (fun o -> o.Keys |> Seq.forall (fun k -> List.contains k [ "--count"; "--from"; "--parallel"; "--net"; "--shop-net" ]))
+        |> Option.bind (fun o ->
+            let number key fallback =
+                match Map.tryFind key o with
+                | None -> fallback
+                | Some v ->
+                    match Int32.TryParse v with
+                    | true, n when n >= 1 -> Some n
+                    | _ -> None
+
+            match number "--count" None, number "--from" (Some 1), number "--parallel" (Some(max 1 (Environment.ProcessorCount / 2))) with
+            | Some count, Some from, Some degree -> Some(count, from, degree, o)
+            | _ -> None)
+
+    match parsed with
+    | Some(count, from, degree, o) ->
+        let seeds = [ for i in from .. from + count - 1 -> sprintf "SIM%04d" i ]
+        let net = Map.tryFind "--net" o |> Option.map PlayNet.load
+        let shopNet = Map.tryFind "--shop-net" o |> Option.map PlayNet.load
+        Shop.useNetwork shopNet
+        if fast then Policy.shopSamples <- (4, 8)
+        let watch = Diagnostics.Stopwatch.StartNew()
+
+        let rows =
+            Batch.runParallel degree net Sim.create Api.Deck.Red Api.Stake.White seeds (if fast then "runs/sim-fast" else "runs/sim")
+
+        Batch.summary "WHITE" rows |> printfn "%s"
+        let seconds = watch.Elapsed.TotalSeconds
+        printfn "wall time %.0f s, %.1f runs per hour" seconds (float rows.Length * 3600.0 / seconds)
+        if shopNet.IsSome then printfn "%s" (shopLine ())
+        0
+    | None ->
+        eprintfn "usage: sim --count <N> [--from <K>] [--parallel <P>] [--fast] [--net <PATH>] [--shop-net <PATH>]"
+        2
+
 [<EntryPoint>]
 let main argv =
     match List.ofArray argv with
     | "oracle" :: rest -> oracle rest
     | "batch" :: rest -> batch rest
+    | "sim" :: rest -> sim rest
     | _ ->
 
     let parsed =
