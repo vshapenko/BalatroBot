@@ -25,6 +25,24 @@ let private suitOfName (name: string) =
 let private allRanks =
     [ Two; Three; Four; Five; Six; Seven; Eight; Nine; Ten; Jack; Queen; King; Ace ]
 
+let private ancientSuit =
+    let pattern = Regex(@"with (\w+) suit", RegexOptions.Compiled)
+
+    TextMemo(fun text ->
+        let m = pattern.Match text
+        if m.Success then suitOfName m.Groups[1].Value else None)
+
+let private idolTarget =
+    let pattern = Regex(@"played (\w+) of (\w+) gives", RegexOptions.Compiled)
+
+    TextMemo(fun text ->
+        let m = pattern.Match text
+
+        if m.Success then
+            List.tryFind (fun rank -> Rank.label rank = m.Groups[1].Value) allRanks, suitOfName m.Groups[2].Value
+        else
+            None, None)
+
 let defs: (string * JokerDef) list =
     [ "j_greedy_joker",
       { JokerDef.none with
@@ -82,27 +100,14 @@ let defs: (string * JokerDef) list =
       { JokerDef.none with
           OnScored =
             fun context joker _ card ->
-                let suit =
-                    Regex.Match(joker.Text, @"with (\w+) suit")
-                    |> fun m -> if m.Success then suitOfName m.Groups[1].Value else None
-
-                match suit with
+                match ancientSuit.Read joker.Text with
                 | Some suit when isSuit context suit card -> [ TimesMult 1.5 ]
                 | _ -> [] }
       "j_idol",
       { JokerDef.none with
           OnScored =
             fun context joker _ card ->
-                let m = Regex.Match(joker.Text, @"played (\w+) of (\w+) gives")
-
-                let target =
-                    if m.Success then
-                        List.tryFind (fun rank -> Rank.label rank = m.Groups[1].Value) allRanks,
-                        suitOfName m.Groups[2].Value
-                    else
-                        None, None
-
-                match target with
+                match idolTarget.Read joker.Text with
                 | Some rank, Some suit when hasRank [ rank ] card && isSuit context suit card -> [ TimesMult 2.0 ]
                 | _ -> [] }
       "j_sock_and_buskin",

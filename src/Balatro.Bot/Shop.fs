@@ -60,12 +60,24 @@ let private simulate (build: Build) (shuffle: Card[]) : float * (Card list * Sco
             DiscardsLeft = discardsLeft
             HandPlays = plays }
 
-    let score plays handsLeftAfter discardsLeft played held =
-        Scoring.scoreWith
-            (situation plays handsLeftAfter discardsLeft)
-            { Played = played
-              Held = held
-              Levels = build.Levels }
+    // one search scores every subset under the same situation, so it is built once per hands and discards left
+    let score plays =
+        let last = ref None
+
+        fun handsLeftAfter discardsLeft played held ->
+            let current =
+                match last.Value with
+                | Some(left, discards, current) when left = handsLeftAfter && discards = discardsLeft -> current
+                | _ ->
+                    let current = situation plays handsLeftAfter discardsLeft
+                    last.Value <- Some(handsLeftAfter, discardsLeft, current)
+                    current
+
+            Scoring.scoreWith
+                current
+                { Played = played
+                  Held = held
+                  Levels = build.Levels }
 
     let pick plays (input: Search.Input) =
         let chosen =

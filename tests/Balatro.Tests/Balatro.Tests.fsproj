@@ -18,6 +18,7 @@
     <Compile Include="SearchTests.fs" />
     <Compile Include="ShopTests.fs" />
     <Compile Include="ShopSpeedTests.fs" />
+    <Compile Include="SearchSpeedTests.fs" />
     <Compile Include="GameTests.fs" />
     <Compile Include="BatchTests.fs" />
     <Compile Include="BossTests.fs" />

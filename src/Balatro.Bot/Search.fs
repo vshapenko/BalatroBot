@@ -33,9 +33,20 @@ let rec private combos k start n =
               for rest in combos (k - 1) (i + 1) n -> i :: rest ]
 
 // Every set of one to five positions of a hand of n cards, by size, then in order
-let private subsetIndices n =
+let private buildSubsets n =
     [| for k in 1..5 do
            for c in combos k 0 n -> Array.ofList c |]
+
+let private subsetTables = Array.init 17 (fun n -> lazy (buildSubsets n))
+
+let private subsetIndices n =
+    if n >= 0 && n < subsetTables.Length then
+        subsetTables[n].Value
+    else
+        buildSubsets n
+
+// The subsets of a hand at positions 0 to n - 1, as the lists a result carries
+let private subsetLists = Array.init 17 (fun n -> lazy (subsetIndices n |> Array.map List.ofArray))
 
 let private split (cards: Card[]) (subset: int[]) =
     let mutable played = []
@@ -50,21 +61,6 @@ let private split (cards: Card[]) (subset: int[]) =
             held <- cards[i] :: held
 
     played, held
-
-let private scored
-    (score: int -> int -> Card list -> Card list -> ScoreBreakdown)
-    (handsLeftAfter: int)
-    (discardsLeft: int)
-    (hand: (int * Card) list)
-    =
-    let positions = hand |> List.map fst |> Array.ofList
-    let cards = hand |> List.map snd |> Array.ofList
-
-    subsetIndices cards.Length
-    |> Array.map (fun subset ->
-        let played, held = split cards subset
-        subset |> Array.map (fun i -> positions[i]) |> List.ofArray, played, score handsLeftAfter discardsLeft played held)
-    |> List.ofArray
 
 // The subset with the highest total, then the most cards, then the first in order; and that total
 let private bestSubset
@@ -98,9 +94,64 @@ let private shuffles (input: Input) (offset: int) (count: int) =
         Random(input.Seed + offset + s).Shuffle cards
         cards)
 
+let private compareLists (a: int list) (b: int list) =
+    let mutable a = a
+    let mutable b = b
+    let mutable result = 0
+
+    while result = 0 && not a.IsEmpty && not b.IsEmpty do
+        result <- compare a.Head b.Head
+        a <- a.Tail
+        b <- b.Tail
+
+    if result <> 0 then result
+    elif a.IsEmpty && b.IsEmpty then 0
+    elif a.IsEmpty then -1
+    else 1
+
 let plays (input: Input) : (int list * Card list * ScoreBreakdown) list =
-    scored input.Score (input.HandsLeft - 1) input.DiscardsLeft input.Hand
-    |> List.sortBy (fun (indices, _, b) -> -b.Total, indices.Length, indices)
+    let positions = input.Hand |> List.map fst |> Array.ofList
+    let cards = input.Hand |> List.map snd |> Array.ofList
+    let subsets = subsetIndices cards.Length
+
+    let mutable inOrder = cards.Length < subsetLists.Length
+
+    for i in 0 .. positions.Length - 1 do
+        if positions[i] <> i then
+            inOrder <- false
+
+    let lists =
+        if inOrder then
+            subsetLists[cards.Length].Value
+        else
+            subsets |> Array.map (fun subset -> subset |> Array.map (fun i -> positions[i]) |> List.ofArray)
+
+    let results =
+        subsets
+        |> Array.mapi (fun s subset ->
+            let played, held = split cards subset
+            lists[s], played, input.Score (input.HandsLeft - 1) input.DiscardsLeft played held)
+
+    let totals = results |> Array.map (fun (_, _, b) -> -b.Total)
+
+    // equal totals and sizes fall back to the positions, and to the order of the subsets as a stable sort would
+    let order =
+        Array.init results.Length id
+        |> Array.sortWith (fun x y ->
+            let c = compare totals[x] totals[y]
+
+            if c <> 0 then
+                c
+            else
+                let c = compare subsets[x].Length subsets[y].Length
+
+                if c <> 0 then
+                    c
+                else
+                    let c = compareLists lists[x] lists[y]
+                    if c <> 0 then c else compare x y)
+
+    [ for i in order -> results[i] ]
 
 let discards (input: Input) : (int list * float) list =
     let shuffles = shuffles input 0 input.RedrawSamples

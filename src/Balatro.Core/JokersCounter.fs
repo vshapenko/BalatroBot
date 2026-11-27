@@ -25,13 +25,24 @@ let private standing (effect: float -> Effect list) =
         Main = fun _ joker -> effect (value joker) }
 
 // The current value written at the start of the card text, 0 when the text is not readable
-let private leading (prefix: string) (joker: Joker) =
-    let m = Regex.Match(joker.Text, "^" + Regex.Escape prefix + @"(\d+(?:\.\d+)?)")
+let private leading (prefix: string) =
+    let pattern = Regex(prefix + @"(\d+(?:\.\d+)?)", RegexOptions.Compiled)
 
-    if m.Success then
-        Double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture)
-    else
-        0.0
+    TextMemo(fun text ->
+        let m = pattern.Match text
+
+        if m.Success then
+            Double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture)
+        else
+            0.0)
+
+let private leadingPlus = leading @"^\+"
+
+let private leadingTimes = leading "^X"
+
+let private loyaltyActive =
+    let pattern = Regex(@"Active!|\b0 remaining", RegexOptions.Compiled)
+    TextMemo(fun text -> pattern.IsMatch text)
 
 let defs: (string * JokerDef) list =
     [ "j_green_joker",
@@ -94,21 +105,21 @@ let defs: (string * JokerDef) list =
       "j_wee", standing chips
       "j_ice_cream",
       { JokerDef.none with
-          Main = fun _ joker -> chips (leading "+" joker) }
+          Main = fun _ joker -> chips (leadingPlus.Read joker.Text) }
       "j_popcorn",
       { JokerDef.none with
-          Main = fun _ joker -> mult (leading "+" joker) }
+          Main = fun _ joker -> mult (leadingPlus.Read joker.Text) }
       "j_ramen",
       { JokerDef.none with
           // the game subtracts 0.01 once per discarded card from 2, so the text value is rebuilt the same way
           Main =
             fun _ joker ->
-                let discarded = int (Math.Round((2.0 - leading "X" joker) / 0.01))
+                let discarded = int (Math.Round((2.0 - leadingTimes.Read joker.Text) / 0.01))
                 times (Seq.fold (fun factor _ -> factor - 0.01) 2.0 (seq { 1..discarded })) }
       // the hand counter moves after scoring, so the hand that pays shows as active in the text
       "j_loyalty_card",
       { JokerDef.none with
-          Main = fun _ joker -> if Regex.IsMatch(joker.Text, @"Active!|\b0 remaining") then [ TimesMult 4.0 ] else [] }
+          Main = fun _ joker -> if loyaltyActive.Read joker.Text then [ TimesMult 4.0 ] else [] }
       "j_midas_mask",
       { JokerDef.none with
           BeforeCards =

@@ -74,6 +74,20 @@ module JokerDef =
           HeldRetriggers = fun _ _ _ -> 0
           Main = fun _ _ -> [] }
 
+// The reading of a joker's text, kept per thread while the very same text keeps coming
+type internal TextMemo<'T>(read: string -> 'T) =
+    let last = new System.Threading.ThreadLocal<struct (string * 'T)>()
+
+    member _.Read(text: string) : 'T =
+        let struct (seen, value) = last.Value
+
+        if not (isNull text) && obj.ReferenceEquals(seen, text) then
+            value
+        else
+            let value = read text
+            last.Value <- struct (text, value)
+            value
+
 let isFace (context: Context) (card: Card) =
     not card.Debuffed
     && (context.Rules.Pareidolia
