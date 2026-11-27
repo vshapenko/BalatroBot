@@ -27,6 +27,7 @@
     <Compile Include="PlayNetPolicyTests.fs" />
     <Compile Include="ExpertsTests.fs" />
     <Compile Include="SimContentTests.fs" />
+    <Compile Include="SimJokersTests.fs" />
     <Content Include="../../fixtures/**" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../../nn/playnet.json" Link="nn/playnet.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
