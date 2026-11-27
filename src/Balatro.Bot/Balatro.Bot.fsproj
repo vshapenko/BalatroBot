@@ -19,6 +19,7 @@
     <Compile Include="Policy.fs" />
     <Compile Include="SimContent.fs" />
     <Compile Include="SimJokers.fs" />
+    <Compile Include="Sim.fs" />
     <Compile Include="Runner.fs" />
     <Compile Include="Batch.fs" />
     <Compile Include="Oracle.fs" />
